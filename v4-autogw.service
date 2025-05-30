@@ -1,0 +1,14 @@
+[Unit]
+Description=IPv6 Gateway Sync Script
+After=network.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/v4-autogw.sh
+Restart=on-failure
+RestartSec=60
+User=root
+Environment=IFACE=eth0
+
+[Install]
+WantedBy=multi-user.target
