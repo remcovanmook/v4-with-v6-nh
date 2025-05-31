@@ -56,7 +56,7 @@ trap 'syslog "Signal received - exiting"; kill $IP_MONITOR_PID; rm -f $RUNDIR/v4
 handle_route_change "`$IPROUTE -6 r l default dev $IFACE`"
 
 # Main loop to catch updates
-ip -6 monitor route > "$IP_MONITOR_FIFO" &
+ip -6 monitor route dev $IFACE > "$IP_MONITOR_FIFO" &
 IP_MONITOR_PID=$!
 while read -r line < "$IP_MONITOR_FIFO"; do
     if echo "$line" | grep -q "^default"; then
