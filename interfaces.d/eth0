@@ -1,0 +1,7 @@
+auto eth0
+iface eth0 inet static
+  address 192.168.0.2/32
+
+iface eth0 inet6 auto
+  up /usr/local/bin/v4-autogw.sh &
+  post-down kill -9 `cat /var/run/v4-autogw.pid`
