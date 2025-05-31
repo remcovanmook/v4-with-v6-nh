@@ -21,32 +21,32 @@ killable_sleep() {
 # Setup PID file, set trap for SIGINT and SIGTERM
 echo $$ > /var/run/v4-autogw.pid
 trap 'logger -t v4-autogw -p daemon.notice "Signal received - exiting"; kill $SLEEP_PID; rm -f /var/run/v4-autogw.pid; exit 0' SIGINT SIGTERM
+logger -t v4-autogw -p daemon.notice "Running on interface $IFACE"
 
 while true; do
-    V6DEFAULT=$($IPROUTE -6 r l default | grep "dev $IFACE" | head -1)
-    V4DEFAULT=$($IPROUTE -4 r l default | grep "dev $IFACE" | head -1)
+    V6DEFAULT=$($IPROUTE -6 r l default dev $IFACE)
+    V4DEFAULT=$($IPROUTE -4 r l default dev $IFACE)
 
     if [ -n "$V6DEFAULT" ]; then
         EXPIRES=$(echo "$V6DEFAULT" | sed -n 's/.*expires \([0-9]\+\)sec.*/\1/p')
 	EXPIRES=${EXPIRES:-600} # fallback default of 600 seconds
 	SLEEP=$(( $EXPIRES / 2))
 
-        # Check if the third field of V4DEFAULT is 'inet6' - if so, we need to shift fields one back
-        if [ "$(echo "$V4DEFAULT" | awk '{print $3}')" == "inet6" ]; then
-            V4GW=$(echo "$V4DEFAULT" | awk '{print $4" "$5" "$6}')
-        else
-            V4GW=$(echo "$V4DEFAULT" | awk '{print $3" "$4" "$5}')
+    	V4GW=$(echo "$V4DEFAULT" | awk '{print $3;exit}')
+        # Check if V4DEFAULT is 'inet6' - if so, we need to have the fourth field
+	if [ "$V4GW" == "inet6" ]; then
+            V4GW=$(echo "$V4DEFAULT" | awk '{print $4;exit}')
         fi
 
-        V6GW=$(echo "$V6DEFAULT" | awk '{print $3" "$4" "$5}')
+        V6GW=$(echo "$V6DEFAULT" | awk '{print $3;exit}')
 
         if [ "$V4GW" != "$V6GW" ]; then
             if [ -n "$V4DEFAULT" ]; then
                 logger -t v4-autogw -p daemon.notice "changing IPv4 default gateway from $V4GW to $V6GW - sleeping for $SLEEP seconds"
-                $IPROUTE -4 route change default via inet6 $V6GW
+                $IPROUTE -4 route change default via inet6 $V6GW dev $IFACE
             else
                 logger -t v4-autogw -p daemon.notice "setting IPv4 default gateway to $V6GW - sleeping for $SLEEP seconds"
-                $IPROUTE -4 route add default via inet6 $V6GW
+                $IPROUTE -4 route add default via inet6 $V6GW dev $IFACE
             fi
 	#else
 	#    logger -t v4-autogw -p daemon.notice "IPv4 gateway matches IPv6 gateway - nothing to do"
