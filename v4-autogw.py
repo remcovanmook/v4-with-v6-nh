@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+# Non-functional work in progress
+
 import os
 import sys
 import time
