@@ -10,7 +10,17 @@ if [ -z "$IFACE" ]; then
     exit 1
 fi
 
+# Sleep function
+SLEEP_PID=""
+killable_sleep() {
+	sleep "$1" &
+	SLEEP_PID=$!
+	wait $SLEEP_PID
+}
+
+# Setup PID file, set trap for SIGINT and SIGTERM
 echo $$ > /var/run/v4-autogw.pid
+trap 'logger -t v4-autogw -p daemon.notice "Signal received - exiting"; kill $SLEEP_PID; rm -f /var/run/v4-autogw.pid; exit 0' SIGINT SIGTERM
 
 while true; do
     V6DEFAULT=$($IPROUTE -6 r l default | grep "dev $IFACE" | head -1)
@@ -18,7 +28,8 @@ while true; do
 
     if [ -n "$V6DEFAULT" ]; then
         EXPIRES=$(echo "$V6DEFAULT" | sed -n 's/.*expires \([0-9]\+\)sec.*/\1/p')
-        EXPIRES=${EXPIRES:-600} # fallback default of 600 seconds
+	EXPIRES=${EXPIRES:-600} # fallback default of 600 seconds
+	SLEEP=$(( $EXPIRES / 2))
 
         # Check if the third field of V4DEFAULT is 'inet6' - if so, we need to shift fields one back
         if [ "$(echo "$V4DEFAULT" | awk '{print $3}')" == "inet6" ]; then
@@ -31,17 +42,17 @@ while true; do
 
         if [ "$V4GW" != "$V6GW" ]; then
             if [ -n "$V4DEFAULT" ]; then
-                logger -t v4-autogw -p daemon.notice "changing IPv4 default gateway from $V4GW to $V6GW - sleeping for $EXPIRES seconds"
+                logger -t v4-autogw -p daemon.notice "changing IPv4 default gateway from $V4GW to $V6GW - sleeping for $SLEEP seconds"
                 $IPROUTE -4 route change default via inet6 $V6GW
             else
-                logger -t v4-autogw -p daemon.notice "setting IPv4 default gateway to $V6GW - sleeping for $EXPIRES seconds"
+                logger -t v4-autogw -p daemon.notice "setting IPv4 default gateway to $V6GW - sleeping for $SLEEP seconds"
                 $IPROUTE -4 route add default via inet6 $V6GW
             fi
-        #else
-        #    logger -t v4-autogw -p daemon.notice "IPv4 gateway matches IPv6 gateway - nothing to do"
+	#else
+	#    logger -t v4-autogw -p daemon.notice "IPv4 gateway matches IPv6 gateway - nothing to do"
         fi
 
-        sleep $(( $EXPIRES / 2 ))
+        killable_sleep $SLEEP
 
     else
         if [ -n "$V4DEFAULT" ]; then
@@ -50,8 +61,7 @@ while true; do
             exit 2
         else
             logger -t v4-autogw -p daemon.notice "No default gateways found - sleeping"
-            sleep 5
+            killable_sleep 5
         fi
     fi
 done
-rm -f /var/run/v4-autogw.pid
