@@ -4,7 +4,8 @@ This allows you to set individual IPv4 addresses on a public interface without e
 
 Barely tested, may insult your boss and harm your dog. Proceed with caution. 
 
-Bonus: No ARP. Did I say no ARP?
+## Bonus: 
+No ARP. Also: no IPv4 subnets, no zero, router or broadcast IPs. Get 8 usable IPv4 addresses out of a /29. Did I say no ARP?
 
 On the side of the router, you either:
 - need to have a routing daemon running which sets the next hop for the IP to one of its v6 addresses
