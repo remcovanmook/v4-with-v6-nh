@@ -2,7 +2,12 @@
 
 # This script sets the IPv4 default gateway to follow the IPv6 default gateway on the specified interface.
 
-IPROUTE=/usr/sbin/ip
+
+set -euo pipefail
+
+IPROUTE=$(command -v ip)
+command -v $IPROUTE >/dev/null 2>&1 || { echo "ip command not found"; exit 1; }
+LOGGER=$(command -v logger)
 RUNDIR=/var/run
 IFACE=${IFACE:-"$1"}
 
@@ -12,16 +17,15 @@ if [ -z "$IFACE" ]; then
 fi
 
 syslog () {
-   /usr/bin/logger -t v4-autogw -p daemon.notice "$1"
+   $LOGGER -t v4-autogw -p daemon.notice "$1"
 }
 
 handle_route_change() {
     local V6GW=$(echo "$1" | awk '{print $3;exit}')
-    local V4DEFAULT=$($IPROUTE -4 r l default dev $IFACE)
     local V4GW=$($IPROUTE -4 r l default dev $IFACE | awk '{print $3;exit}')
-    # Check if V4DEFAULT is 'inet6' - if so, we need to have the fourth field
+    # Check if V4GW is 'inet6' - if so, we need to have the fourth field
     if [ "$V4GW" == "inet6" ]; then
-        V4GW=$(e$IPROUTE -4 r l default dev $IFACE | awk '{print $4;exit}')
+        V4GW=$($IPROUTE -4 r l default dev $IFACE | awk '{print $4;exit}')
     fi
 
     if [ -n "$V6GW" ]; then
@@ -45,21 +49,33 @@ handle_route_change() {
     fi
 }
 
+cleanup() {
+    syslog "Cleaning up and exiting"
+    if [ -n "$IP_MONITOR_PID" ]; then
+        kill "$IP_MONITOR_PID"
+    fi
+    rm -f "$RUNDIR/v4-autogw.{pid,fifo}"
+    exit 0
+}
+trap cleanup SIGINT SIGTERM EXIT
+
 # Setup FIFO for monitor process and PID file, set trap for SIGINT and SIGTERM
+echo "$$" > "$RUNDIR/v4-autogw.pid"
 IP_MONITOR_PID=""
 IP_MONITOR_FIFO="$RUNDIR/v4-autogw.fifo"
-rm -f $IP_MONITOR_FIFO; mkfifo $IP_MONITOR_FIFO
-echo $$ > $RUNDIR/v4-autogw.pid
-trap 'syslog "Signal received - exiting"; kill $IP_MONITOR_PID; rm -f $RUNDIR/v4-autogw.{pid,fifo}; exit 0' SIGINT SIGTERM
+rm -f "$IP_MONITOR_FIFO"
+mkfifo "$IP_MONITOR_FIFO"
 
 # Initial run at startup
 handle_route_change "`$IPROUTE -6 r l default dev $IFACE`"
 
 # Main loop to catch updates
-ip -6 monitor route dev $IFACE > "$IP_MONITOR_FIFO" &
+$IPROUTE -6 monitor route dev $IFACE > "$IP_MONITOR_FIFO" &
 IP_MONITOR_PID=$!
 while read -r line < "$IP_MONITOR_FIFO"; do
     if echo "$line" | grep -q "^default"; then
         handle_route_change "$line"
     fi
 done
+
+rm -f "$RUNDIR/v4-autogw.{pid,fifo}"
