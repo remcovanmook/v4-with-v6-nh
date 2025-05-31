@@ -1,8 +1,9 @@
 #!/bin/bash
 
-IPROUTE=/usr/sbin/ip
+# This script sets the IPv4 default gateway to follow the IPv6 default gateway on the specified interface.
 
-# Use $IFACE if set, otherwise use first positional argument
+IPROUTE=/usr/sbin/ip
+RUNDIR=/var/run
 IFACE=${IFACE:-"$1"}
 
 if [ -z "$IFACE" ]; then
@@ -10,58 +11,55 @@ if [ -z "$IFACE" ]; then
     exit 1
 fi
 
-# Sleep function
-SLEEP_PID=""
-killable_sleep() {
-	sleep "$1" &
-	SLEEP_PID=$!
-	wait $SLEEP_PID
+syslog () {
+   /usr/bin/logger -t v4-autogw -p daemon.notice "$1"
 }
 
-# Setup PID file, set trap for SIGINT and SIGTERM
-echo $$ > /var/run/v4-autogw.pid
-trap 'logger -t v4-autogw -p daemon.notice "Signal received - exiting"; kill $SLEEP_PID; rm -f /var/run/v4-autogw.pid; exit 0' SIGINT SIGTERM
-logger -t v4-autogw -p daemon.notice "Running on interface $IFACE"
+handle_route_change() {
+    local V6GW=$(echo "$1" | awk '{print $3;exit}')
+    local V4DEFAULT=$($IPROUTE -4 r l default dev $IFACE)
+    local V4GW=$($IPROUTE -4 r l default dev $IFACE | awk '{print $3;exit}')
+    # Check if V4DEFAULT is 'inet6' - if so, we need to have the fourth field
+    if [ "$V4GW" == "inet6" ]; then
+        V4GW=$(e$IPROUTE -4 r l default dev $IFACE | awk '{print $4;exit}')
+    fi
 
-while true; do
-    V6DEFAULT=$($IPROUTE -6 r l default dev $IFACE)
-    V4DEFAULT=$($IPROUTE -4 r l default dev $IFACE)
-
-    if [ -n "$V6DEFAULT" ]; then
-        EXPIRES=$(echo "$V6DEFAULT" | sed -n 's/.*expires \([0-9]\+\)sec.*/\1/p')
-	EXPIRES=${EXPIRES:-600} # fallback default of 600 seconds
-	SLEEP=$(( $EXPIRES / 2))
-
-    	V4GW=$(echo "$V4DEFAULT" | awk '{print $3;exit}')
-        # Check if V4DEFAULT is 'inet6' - if so, we need to have the fourth field
-	if [ "$V4GW" == "inet6" ]; then
-            V4GW=$(echo "$V4DEFAULT" | awk '{print $4;exit}')
-        fi
-
-        V6GW=$(echo "$V6DEFAULT" | awk '{print $3;exit}')
-
+    if [ -n "$V6GW" ]; then
         if [ "$V4GW" != "$V6GW" ]; then
-            if [ -n "$V4DEFAULT" ]; then
-                logger -t v4-autogw -p daemon.notice "changing IPv4 default gateway from $V4GW to $V6GW - sleeping for $SLEEP seconds"
+            if [ -n "$V4GW" ]; then
+                syslog "Changing IPv4 default gateway from $V4GW to $V6GW"
                 $IPROUTE -4 route change default via inet6 $V6GW dev $IFACE
             else
-                logger -t v4-autogw -p daemon.notice "setting IPv4 default gateway to $V6GW - sleeping for $SLEEP seconds"
+                syslog "Setting IPv4 default gateway to $V6GW"
                 $IPROUTE -4 route add default via inet6 $V6GW dev $IFACE
             fi
-	#else
-	#    logger -t v4-autogw -p daemon.notice "IPv4 gateway matches IPv6 gateway - nothing to do"
         fi
-
-        killable_sleep $SLEEP
-
     else
         if [ -n "$V4DEFAULT" ]; then
-            logger -t v4-autogw -p daemon.notice "No default IPv6 gateway found but IPv4 gateway exists - exiting"
-            rm -f /var/run/v4-autogw.pid
+            syslog "No default IPv6 gateway found but IPv4 gateway exists - exiting"
+            rm -f $RUNDIR/v4-autogw.{pid,fifo}
             exit 2
         else
-            logger -t v4-autogw -p daemon.notice "No default gateways found - sleeping"
-            killable_sleep 5
+            syslog "No IPv6 default gateways found - waiting..."
         fi
+    fi
+}
+
+# Setup FIFO for monitor process and PID file, set trap for SIGINT and SIGTERM
+IP_MONITOR_PID=""
+IP_MONITOR_FIFO="$RUNDIR/v4-autogw.fifo"
+rm -f $IP_MONITOR_FIFO; mkfifo $IP_MONITOR_FIFO
+echo $$ > $RUNDIR/v4-autogw.pid
+trap 'syslog "Signal received - exiting"; kill $IP_MONITOR_PID; rm -f $RUNDIR/v4-autogw.{pid,fifo}; exit 0' SIGINT SIGTERM
+
+# Initial run at startup
+handle_route_change "`$IPROUTE -6 r l default dev $IFACE`"
+
+# Main loop to catch updates
+ip -6 monitor route > "$IP_MONITOR_FIFO" &
+IP_MONITOR_PID=$!
+while read -r line < "$IP_MONITOR_FIFO"; do
+    if echo "$line" | grep -q "^default"; then
+        handle_route_change "$line"
     fi
 done
