@@ -4,4 +4,4 @@ iface eth0 inet static
 
 iface eth0 inet6 auto
   up /usr/local/bin/v4-autogw.sh &
-  post-down kill -9 `cat /var/run/v4-autogw.pid`
+  post-down kill `cat /var/run/v4-autogw.pid`
