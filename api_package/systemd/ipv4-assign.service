@@ -1,0 +1,13 @@
+[Unit]
+Description=Assign IPv4s to default IPv6 interface and register with API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/discover-and-assign.sh
+ExecStop=/usr/local/bin/remove-and-deregister.sh
+RemainAfterExit=true
+
+[Install]
+WantedBy=multi-user.target
