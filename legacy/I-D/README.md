@@ -81,7 +81,7 @@ Table of Contents
    and ISP networks, IPv4 communication may still be required by
    applications or systems. However, traditional IPv4 mechanisms like
    ARP and subnet configuration impose unnecessary complexity in such
-   environments.
+   large environments.
 
    Hosts in these environments typically receive IPv6 configuration
    through SLAAC or DHCPv6, including a default gateway. This document
@@ -104,7 +104,7 @@ Table of Contents
 2. Rationale
 
    The key goal is to enable IPv4 communication in environments that
-   are natively IPv6-only, without relying on dual-stack or tunneling.
+   are natively IPv6-only, without relying on tunneling or translation.
    This is accomplished by decoupling IPv4 next-hop resolution from ARP
    and instead aligning it with the IPv6 default gateway.
 
@@ -128,8 +128,7 @@ Table of Contents
 
 3. Compatibility Considerations
 
-   - Hosts continue to use standard IPv4 protocol semantics and packet
-     formats.
+   - Hosts continue to use standard IPv4 protocol semantics.
    - Applications requiring IPv4 continue to function as expected.
    - No changes are required to the IPv4 packet format.
    - The only change is that 192.0.0.11 is interpreted by the host stack

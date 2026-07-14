@@ -1,0 +1,476 @@
+From b4e2b6c6501489b8d86b0d3c1730b93982d9faf0 Mon Sep 17 00:00:00 2001
+From: Remco van Mook <remco@asteroidhq.com>
+Date: Mon, 13 Jul 2026 22:48:16 +0000
+Subject: [PATCH] network: support IPv6-resolved IPv4 gateway (192.0.0.11)
+
+Implement the host-side behaviour of
+draft-vanmook-intarea-ipv6-resolved-gateway behind a new opt-in
+[DHCPv4] UseIPv6ResolvedGateway= boolean (default false): when enabled
+and a DHCPv4 lease designates the special-purpose address 192.0.0.11 as
+the router (option 3), the IPv4 default route is not installed with an
+ARP-resolved IPv4 next hop. Instead, the next hop is set to the IPv6
+default router selected from the NDisc default router list per RFC 4191
+preference (ties broken deterministically by lowest router address),
+and the route is programmed with an IPv6 nexthop (RTA_VIA, Linux 5.2+),
+so the kernel resolves the link-layer address via Neighbor Discovery.
+No ARP is performed, and no IPv4 subnet is required on the link.
+
+Because networkd owns both the DHCPv4 client and the NDisc state in a
+single process, the IPv4 default route is re-evaluated whenever the
+default router list changes: on RA reception and on router lifetime
+expiry. If no IPv6 default router is known when the lease is processed,
+route installation is deferred until the first RA arrives. RFC 3442
+precedence of classless static routes over the Router option is
+preserved. Lease renewal and loss are covered by the existing DHCPv4
+mark/sweep of routes with source NETWORK_CONFIG_SOURCE_DHCP4; a router
+change away from the sentinel drops the stale RTA_VIA route through the
+same mechanism.
+
+Kernels older than 5.2 are detected via a one-time version check and
+the route is skipped with a warning; vendor backports are still caught
+by the netlink error path. An integration test covers route
+installation via the built-in DHCP server (Router=192.0.0.11) combined
+with IPv6SendRA=, and re-evaluation across an RA refresh.
+---
+ man/systemd.network.xml                       |  21 ++
+ src/network/networkd-dhcp4.c                  | 207 ++++++++++++++++++
+ src/network/networkd-dhcp4.h                  |   1 +
+ src/network/networkd-ndisc.c                  |   9 +
+ src/network/networkd-network-gperf.gperf      |   1 +
+ src/network/networkd-network.h                |   1 +
+ .../25-dhcp-client-ipv6-resolved-gw.network   |  10 +
+ .../25-dhcp-server-ipv6-resolved-gw.network   |  18 ++
+ test/test-network/systemd-networkd-tests.py   |  23 ++
+ 9 files changed, 291 insertions(+)
+ create mode 100644 test/test-network/conf/25-dhcp-client-ipv6-resolved-gw.network
+ create mode 100644 test/test-network/conf/25-dhcp-server-ipv6-resolved-gw.network
+
+diff --git a/man/systemd.network.xml b/man/systemd.network.xml
+index 6b988e0..7c78621 100644
+--- a/man/systemd.network.xml
++++ b/man/systemd.network.xml
+@@ -2913,6 +2913,27 @@ MultiPathRoute=2001:db8::1@eth0</programlisting>
+         </listitem>
+       </varlistentry>
+ 
++      <varlistentry>
++        <term><varname>UseIPv6ResolvedGateway=</varname></term>
++        <listitem>
++          <para>Takes a boolean. When true, and the DHCP server provides the special-purpose router
++          address 192.0.0.11 (see
++          <ulink url="https://datatracker.ietf.org/doc/draft-vanmook-intarea-ipv6-resolved-gateway/">draft-vanmook-intarea-ipv6-resolved-gateway</ulink>),
++          the IPv4 default route is configured with an IPv6 next hop: the IPv6 default router with the
++          highest preference (RFC 4191) learned via Router Advertisements on the same interface. The
++          next-hop link-layer address is then resolved through IPv6 Neighbor Discovery instead of ARP,
++          enabling native IPv4 connectivity on IPv6-only network segments. The route is re-evaluated
++          whenever the default router list changes. Requires kernel support for IPv4 routes with an IPv6
++          next hop (Linux 5.2 or newer). Only takes effect when <varname>UseGateway=</varname> is
++          enabled, and is subject to the same RFC 3442 precedence rule. The route uses the standard DHCPv4
++          route metric (see <varname>RouteMetric=</varname>) and does not follow the metric of the
++          selected IPv6 default route. Defaults to false.</para>
++
++          <para>This implements a draft specification that may still evolve; the option is provided on
++          an experimental basis and its semantics may change in future versions.</para>
++        </listitem>
++      </varlistentry>
++
+       <varlistentry>
+         <term><varname>UseTimezone=</varname></term>
+         <listitem><para>When true, the timezone received from the DHCP server will be set as timezone
+diff --git a/src/network/networkd-dhcp4.c b/src/network/networkd-dhcp4.c
+index 468c3eb..36e6c16 100644
+--- a/src/network/networkd-dhcp4.c
++++ b/src/network/networkd-dhcp4.c
+@@ -5,10 +5,12 @@
+ #include <linux/rtnetlink.h>
+ #include <netinet/in.h>
+ #include <netinet/ip.h>
++#include <sys/utsname.h>
+ #include <stdio.h>
+ 
+ #include "sd-dhcp-protocol.h"
+ #include "sd-ipv4ll.h"
++#include "sd-ndisc.h"
+ 
+ #include "alloc-util.h"
+ #include "conf-parser.h"
+@@ -119,6 +121,90 @@ static int dhcp4_get_router(Link *link, struct in_addr *ret) {
+         return -ENODATA;
+ }
+ 
++/* draft-vanmook-intarea-ipv6-resolved-gateway: the special-purpose IPv4
++ * gateway address 192.0.0.11 signals that the link-layer address of the
++ * IPv4 default gateway is resolved from the IPv6 default router list and
++ * neighbor cache (RFC 4861, RFC 4191), never via ARP. */
++#define DHCP4_GATEWAY_IPV6_RESOLVED htobe32(UINT32_C(0xc000000b))
++
++static bool dhcp4_router_is_ipv6_resolved(const struct in_addr *router) {
++        assert(router);
++
++        return router->s_addr == DHCP4_GATEWAY_IPV6_RESOLVED;
++}
++
++static int ndisc_preference_rank(uint8_t pref) {
++        switch (pref) {
++        case SD_NDISC_PREFERENCE_HIGH:
++                return 2;
++        case SD_NDISC_PREFERENCE_MEDIUM:
++                return 1;
++        case SD_NDISC_PREFERENCE_LOW:
++                return 0;
++        default:
++                return -1; /* reserved value: ignore the router */
++        }
++}
++
++static bool kernel_supports_ipv4_via_ipv6(void) {
++        static int cached = -1;
++        struct utsname u;
++
++        /* IPv4 routes with an IPv6 next hop (RTA_VIA) require Linux 5.2
++         * (fib_nh gateway family support). A version check rather than a
++         * netlink feature probe: vendor backports to older kernels will
++         * still be caught by the error path of the route request. */
++
++        if (cached < 0) {
++                assert_se(uname(&u) >= 0);
++                cached = strverscmp_improved(u.release, "5.2") >= 0;
++        }
++
++        return cached;
++}
++
++static int dhcp4_select_ndisc_router(Link *link, struct in6_addr *ret) {
++        struct in6_addr *sender, best = {};
++        sd_ndisc_router *rt;
++        int best_rank = -1;
++
++        assert(link);
++        assert(ret);
++
++        /* RFC 4191 router selection: highest Default Router Preference wins.
++         * Ties are broken by iteration order, which is implementation-
++         * defined, as permitted by the draft. Entries with expired lifetimes
++         * are removed from ndisc_routers_by_sender by the NDisc machinery
++         * before we are called. */
++
++        HASHMAP_FOREACH_KEY(rt, sender, link->ndisc_routers_by_sender) {
++                uint8_t pref;
++                int rank;
++
++                if (sd_ndisc_router_get_preference(rt, &pref) < 0)
++                        pref = SD_NDISC_PREFERENCE_MEDIUM;
++
++                rank = ndisc_preference_rank(pref);
++                if (rank < best_rank)
++                        continue;
++
++                /* Deterministic tie-breaker: on equal preference, the
++                 * numerically lowest router address wins. */
++                if (rank == best_rank &&
++                    memcmp(sender, &best, sizeof(struct in6_addr)) >= 0)
++                        continue;
++
++                best_rank = rank;
++                best = *sender;
++        }
++
++        if (best_rank < 0)
++                return -ENODATA;
++
++        *ret = best;
++        return 0;
++}
++
+ static int dhcp4_get_classless_static_or_static_routes(Link *link, sd_dhcp_route ***ret_routes, size_t *ret_num) {
+         _cleanup_free_ sd_dhcp_route **routes = NULL;
+         int r;
+@@ -152,6 +238,10 @@ static int dhcp4_get_classless_static_or_static_routes(Link *link, sd_dhcp_route
+         return 0; /* static */
+ }
+ 
++static bool dhcp4_has_classless_static_or_static_routes(Link *link) {
++        return dhcp4_get_classless_static_or_static_routes(link, NULL, NULL) > 0;
++}
++
+ static int dhcp4_find_gateway_for_destination(
+                 Link *link,
+                 const struct in_addr *destination,
+@@ -603,6 +693,119 @@ static int dhcp4_request_classless_static_or_static_routes(Link *link) {
+         return 0;
+ }
+ 
++static int dhcp4_request_ipv6_resolved_gateway(Link *link) {
++        _cleanup_(route_unrefp) Route *route = NULL;
++        struct in6_addr gw;
++        struct in_addr address;
++        Route *existing;
++        int r;
++
++        assert(link);
++        assert(link->manager);
++        assert(link->dhcp_lease);
++
++        if (!kernel_supports_ipv4_via_ipv6()) {
++                log_link_warning(link, "DHCP: router is the IPv6-resolved gateway (192.0.0.11), "
++                                 "but the kernel does not support IPv4 routes with an IPv6 next hop "
++                                 "(Linux 5.2 or newer is required), not configuring the default route.");
++                return 0;
++        }
++
++        r = dhcp4_select_ndisc_router(link, &gw);
++        if (r == -ENODATA) {
++                /* No IPv6 default router known (yet). Once an RA is
++                 * received, ndisc_router_handler() invokes
++                 * dhcp4_ipv6_resolved_gateway_update() and we get here
++                 * again. */
++                log_link_debug(link, "DHCP: router is the IPv6-resolved gateway (192.0.0.11), "
++                               "but no IPv6 default router is known yet, deferring.");
++                return 0;
++        }
++        if (r < 0)
++                return r;
++
++        r = sd_dhcp_lease_get_address(link->dhcp_lease, &address);
++        if (r < 0)
++                return r;
++
++        /* Drop previously configured IPv6-resolved default routes that
++         * point at a different router. Collect first, remove after, to
++         * avoid modifying the set while iterating over it. */
++        _cleanup_free_ Route **stale = NULL;
++        size_t n_stale = 0;
++
++        SET_FOREACH(existing, link->manager->routes) {
++                if (existing->source != NETWORK_CONFIG_SOURCE_DHCP4)
++                        continue;
++                if (existing->nexthop.ifindex != link->ifindex)
++                        continue;
++                if (existing->family != AF_INET || existing->dst_prefixlen != 0)
++                        continue;
++                if (existing->nexthop.family != AF_INET6)
++                        continue;
++                if (in6_addr_equal(&existing->nexthop.gw.in6, &gw))
++                        continue;
++
++                if (!GREEDY_REALLOC(stale, n_stale + 1))
++                        return -ENOMEM;
++
++                stale[n_stale++] = existing;
++        }
++
++        FOREACH_ARRAY(rt, stale, n_stale)
++                (void) route_remove_and_cancel(*rt, link->manager);
++
++        r = route_new(&route);
++        if (r < 0)
++                return r;
++
++        /* No ARP, and no route-to-gateway host route: the next hop is the
++         * selected IPv6 default router, whose link-layer address the
++         * kernel resolves via Neighbor Discovery (RTA_VIA). */
++        route->nexthop.family = AF_INET6;
++        route->nexthop.gw.in6 = gw;
++        route->prefsrc.in = address;
++
++        log_link_debug(link, "DHCP: router is the IPv6-resolved gateway (192.0.0.11), "
++                       "using IPv6 default router %s as IPv4 next hop.",
++                       IN6_ADDR_TO_STRING(&gw));
++
++        return dhcp4_request_route(route, link);
++}
++
++int dhcp4_ipv6_resolved_gateway_update(Link *link) {
++        struct in_addr router;
++        int r;
++
++        assert(link);
++
++        /* Invoked by the NDisc machinery whenever the default router list
++         * may have changed. Re-evaluates the IPv4 default route if the
++         * DHCPv4 lease designates the IPv6-resolved gateway. */
++
++        if (!link->dhcp_lease)
++                return 0;
++        if (!link->network || !link->network->dhcp_use_gateway)
++                return 0;
++        if (!link->network->dhcp_use_ipv6_resolved_gateway)
++                return 0;
++
++        /* Same precedence rule as dhcp4_request_default_gateway():
++         * RFC 3442 classless static routes override the Router option. */
++        if (link->network->dhcp_use_routes &&
++            dhcp4_has_classless_static_or_static_routes(link))
++                return 0;
++
++        r = dhcp4_get_router(link, &router);
++        if (r < 0)
++                return 0;
++
++        if (!dhcp4_router_is_ipv6_resolved(&router))
++                return 0;
++
++        return dhcp4_request_ipv6_resolved_gateway(link);
++}
++
+ static int dhcp4_request_default_gateway(Link *link) {
+         _cleanup_(route_unrefp) Route *route = NULL;
+         struct in_addr address, router;
+@@ -632,6 +835,10 @@ static int dhcp4_request_default_gateway(Link *link) {
+         if (r < 0)
+                 return r;
+ 
++        if (link->network->dhcp_use_ipv6_resolved_gateway &&
++            dhcp4_router_is_ipv6_resolved(&router))
++                return dhcp4_request_ipv6_resolved_gateway(link);
++
+         r = route_new(&route);
+         if (r < 0)
+                 return r;
+diff --git a/src/network/networkd-dhcp4.h b/src/network/networkd-dhcp4.h
+index 2d6cc9b..ba43122 100644
+--- a/src/network/networkd-dhcp4.h
++++ b/src/network/networkd-dhcp4.h
+@@ -20,6 +20,7 @@ static inline int dhcp4_start(Link *link) {
+ int dhcp4_renew(Link *link);
+ int dhcp4_lease_lost(Link *link);
+ int dhcp4_check_ready(Link *link);
++int dhcp4_ipv6_resolved_gateway_update(Link *link);
+ 
+ int link_request_dhcp4_client(Link *link);
+ int link_drop_dhcp4_config(Link *link, Network *network);
+diff --git a/src/network/networkd-ndisc.c b/src/network/networkd-ndisc.c
+index 08bb2bf..496cee0 100644
+--- a/src/network/networkd-ndisc.c
++++ b/src/network/networkd-ndisc.c
+@@ -16,6 +16,7 @@
+ #include "ndisc-router-internal.h"
+ #include "networkd-address.h"
+ #include "networkd-address-generation.h"
++#include "networkd-dhcp4.h"
+ #include "networkd-dhcp6.h"
+ #include "networkd-ipv6ll.h"
+ #include "networkd-link.h"
+@@ -761,6 +762,10 @@ int ndisc_reconfigure_address(Address *address, Link *link) {
+         if (!link->ndisc_configured)
+                 link_set_state(link, LINK_STATE_CONFIGURING);
+ 
++        /* The default router list may have changed; re-evaluate an
++         * IPv6-resolved IPv4 default gateway (192.0.0.11), if any. */
++        (void) dhcp4_ipv6_resolved_gateway_update(link);
++
+         link_check_ready(link);
+         return 0;
+ }
+@@ -2528,6 +2533,10 @@ static int ndisc_expire_handler(sd_event_source *s, uint64_t usec, void *userdat
+ 
+         (void) ndisc_drop_outdated(link, /* router= */ NULL, now_usec);
+         (void) ndisc_setup_expire(link);
++
++        /* Router lifetimes may have expired; re-evaluate an IPv6-resolved
++         * IPv4 default gateway (192.0.0.11), if any. */
++        (void) dhcp4_ipv6_resolved_gateway_update(link);
+         return 0;
+ }
+ 
+diff --git a/src/network/networkd-network-gperf.gperf b/src/network/networkd-network-gperf.gperf
+index 0b598f1..ac49e8b 100644
+--- a/src/network/networkd-network-gperf.gperf
++++ b/src/network/networkd-network-gperf.gperf
+@@ -269,6 +269,7 @@ DHCPv4.UseHostname,                              config_parse_bool,
+ DHCPv4.UseDomains,                               config_parse_use_domains,                       0,                                      offsetof(Network, dhcp_use_domains)
+ DHCPv4.UseRoutes,                                config_parse_bool,                              0,                                      offsetof(Network, dhcp_use_routes)
+ DHCPv4.UseGateway,                               config_parse_tristate,                          0,                                      offsetof(Network, dhcp_use_gateway)
++DHCPv4.UseIPv6ResolvedGateway,                   config_parse_bool,                              0,                                      offsetof(Network, dhcp_use_ipv6_resolved_gateway)
+ DHCPv4.QuickAck,                                 config_parse_bool,                              0,                                      offsetof(Network, dhcp_quickack)
+ DHCPv4.RequestOptions,                           config_parse_dhcp_request_options,              AF_INET,                                0
+ DHCPv4.Anonymize,                                config_parse_bool,                              0,                                      offsetof(Network, dhcp_anonymize)
+diff --git a/src/network/networkd-network.h b/src/network/networkd-network.h
+index 893b302..0f95c0b 100644
+--- a/src/network/networkd-network.h
++++ b/src/network/networkd-network.h
+@@ -157,6 +157,7 @@ typedef struct Network {
+         bool dhcp_use_mtu;
+         bool dhcp_use_routes;
+         int dhcp_use_gateway;
++        bool dhcp_use_ipv6_resolved_gateway;
+         bool dhcp_quickack;
+         uint32_t dhcp_initial_congestion_window;
+         uint32_t dhcp_advertised_receive_window;
+diff --git a/test/test-network/conf/25-dhcp-client-ipv6-resolved-gw.network b/test/test-network/conf/25-dhcp-client-ipv6-resolved-gw.network
+new file mode 100644
+index 0000000..2add65b
+--- /dev/null
++++ b/test/test-network/conf/25-dhcp-client-ipv6-resolved-gw.network
+@@ -0,0 +1,10 @@
++# SPDX-License-Identifier: LGPL-2.1-or-later
++[Match]
++Name=veth99
++
++[Network]
++DHCP=ipv4
++IPv6AcceptRA=yes
++
++[DHCPv4]
++UseIPv6ResolvedGateway=yes
+diff --git a/test/test-network/conf/25-dhcp-server-ipv6-resolved-gw.network b/test/test-network/conf/25-dhcp-server-ipv6-resolved-gw.network
+new file mode 100644
+index 0000000..fcd943a
+--- /dev/null
++++ b/test/test-network/conf/25-dhcp-server-ipv6-resolved-gw.network
+@@ -0,0 +1,18 @@
++# SPDX-License-Identifier: LGPL-2.1-or-later
++[Match]
++Name=veth-peer
++
++[Network]
++Address=2600::1/64
++IPv6AcceptRA=false
++IPv6SendRA=yes
++DHCPServer=yes
++
++[IPv6SendRA]
++RouterLifetimeSec=1800
++
++[DHCPServer]
++ServerAddress=192.168.5.1/24
++PoolOffset=10
++PoolSize=50
++Router=192.0.0.11
+diff --git a/test/test-network/systemd-networkd-tests.py b/test/test-network/systemd-networkd-tests.py
+index c07fb7a..a839a5a 100755
+--- a/test/test-network/systemd-networkd-tests.py
++++ b/test/test-network/systemd-networkd-tests.py
+@@ -9488,6 +9488,29 @@ class NetworkdDHCPClientTests(unittest.TestCase, Utilities):
+ 
+         check_json(networkctl_json())
+ 
++    def test_dhcp_client_ipv6_resolved_gateway(self):
++        # draft-vanmook-intarea-ipv6-resolved-gateway: DHCPv4 Router option
++        # 192.0.0.11 means the IPv4 default route uses the RA-learned IPv6
++        # default router as next hop (RTA_VIA), resolved via ND, not ARP.
++        copy_network_unit('25-veth.netdev',
++                          '25-dhcp-server-ipv6-resolved-gw.network',
++                          '25-dhcp-client-ipv6-resolved-gw.network')
++        start_networkd()
++        self.wait_online('veth99:routable', 'veth-peer:routable')
++
++        output = check_output('ip -4 route show dev veth99 default')
++        print(output)
++        self.assertRegex(output, r'default via inet6 fe80:[0-9a-f:]+ proto dhcp')
++
++        # No ARP-resolvable IPv4 gateway must be present.
++        self.assertNotIn('via 192.0.0.11', output)
++
++        # Re-evaluation: the route must survive an RA refresh.
++        networkctl('reconfigure', 'veth-peer')
++        self.wait_online('veth99:routable', 'veth-peer:routable')
++        output = check_output('ip -4 route show dev veth99 default')
++        self.assertRegex(output, r'default via inet6 fe80:[0-9a-f:]+ proto dhcp')
++
+     def test_dhcp_client_settings_anonymize(self):
+         copy_network_unit(
+             '25-veth.netdev',
+-- 
+2.43.0
+

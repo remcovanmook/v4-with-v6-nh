@@ -1,0 +1,25 @@
+#!/bin/sh
+# /etc/dhclient-exit-hooks fragment for
+# draft-vanmook-intarea-ipv6-resolved-gateway.
+#
+# dhclient(8) cannot install a default route via 192.0.0.11 (the gateway
+# is not on any connected subnet), so this hook records the Router
+# option in a state file and lets v4gwd(-f) do the route programming.
+# Append to an existing dhclient-exit-hooks if you have one.
+
+V4GWD_STATE="/var/run/v4gwd.${interface}.router"
+
+case "${reason}" in
+BOUND|RENEW|REBIND|REBOOT)
+	if [ "${new_routers}" = "192.0.0.11" ]; then
+		echo "${new_routers}" > "${V4GWD_STATE}"
+		# Prevent dhclient's own (failing) default-route attempt
+		# from mattering; v4gwd owns the default route now.
+	else
+		rm -f "${V4GWD_STATE}"
+	fi
+	;;
+EXPIRE|RELEASE|FAIL|STOP)
+	rm -f "${V4GWD_STATE}"
+	;;
+esac

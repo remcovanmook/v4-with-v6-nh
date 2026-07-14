@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!DOCTYPE rfc SYSTEM "rfc2629.dtd">
+
+<rfc xmlns:xi="http://www.w3.org/2001/XInclude" category="std" ipr="trust200902" docName="draft-mook-ipv6-resolved-ipv4-gateway-00">
+  <front>
+    <title>Request for IANA Assignment: IPv6-Resolved IPv4 Gateway</title>
+    <author fullname="Remco van Mook" initials="R." surname="van Mook">
+      <organization>Novoserve B.V.</organization>
+      <address>
+        <email>remco@novoserve.com</email>
+      </address>
+    </author>
+    <date day="9" month="July" year="2025"/>
+    <area>Internet</area>
+    <workgroup>Network Working Group</workgroup>
+    <abstract>
+      <t>This document requests the allocation of a new IPv4 special-purpose address from the IANA IPv4 Special-Purpose Address Registry. The proposed address, 192.0.0.11/32, is intended to serve as a signal to IPv4 hosts in IPv6-only networks that the link-layer resolution for the default gateway should be derived from the IPv6 default gateway learned via IPv6 Router Advertisements and Neighbor Discovery.</t>
+      <t>This approach enables IPv4 communication without requiring IPv4 subnets or the use of ARP. It maintains backward compatibility with existing IPv4 host software that expects a default gateway IP address, while avoiding the need to implement legacy link-layer protocols.</t>
+      <t>Importantly, this method does not require tunneling or translation. IPv4 packets remain fully native and unaltered, which simplifies deployment and ensures minimal disruption across existing infrastructure. While it's unlikely that any modern host or gateway would be unable to process a native IPv4 packet any time soon, that doesn’t mean we cannot evolve the internal mechanics of next-hop resolution.</t>
+      <t>This document does not define a transition mechanism, nor does it attempt to extend the lifetime of the IPv4 protocol. Its purpose is narrow and practical: to improve operational simplicity in dual-stack environments where IPv6 is the primary network layer, and IPv4 persists solely for legacy application needs. In such settings, relying on IPv4-specific infrastructure like subnets and ARP creates unnecessary complexity. By resolving the IPv4 gateway through IPv6 neighbor discovery, we simplify deployment and remove redundant protocol overhead without altering the semantics of IPv4 itself.</t>
+    </abstract>
+  </front>
+  <middle>
+    <section title="Introduction" anchor="intro">
+      <t>In IPv6-only infrastructure environments, such as modern data centers and ISP networks, IPv4 communication may still be required by applications or systems. However, traditional IPv4 mechanisms like ARP and subnet configuration impose unnecessary complexity in such environments.</t>
+      <t>Hosts in these environments typically receive IPv6 configuration through SLAAC or DHCPv6, including a default gateway. This document proposes a method by which IPv4 traffic may also be sent without requiring ARP or an IPv4 subnet: by configuring a well-known IPv4 address (192.0.0.11) as the default gateway, and resolving its link-layer address using the IPv6 default gateway learned by the host.</t>
+      <t>Crucially, this method does not involve any tunneling or translation mechanisms. IPv4 packets remain standard and native throughout, requiring no encapsulation or rewriting in transit. While it is unlikely for any end host or intermediate gateway to be unable to process an ordinary IPv4 packet any time soon, the opportunity still exists to evolve the way we determine where those packets are sent.</t>
+      <t>This document defines the behavior and compatibility expectations for hosts and forwarding stacks using this mechanism and requests IANA assignment of 192.0.0.11/32 for this purpose.</t>
+    </section>
+    <section title="Rationale" anchor="rationale">
+      <t>The key goal is to enable IPv4 communication in environments that are natively IPv6-only, without relying on dual-stack or tunneling. This is accomplished by decoupling IPv4 next-hop resolution from ARP and instead aligning it with the IPv6 default gateway.</t>
+      <t>By defining 192.0.0.11 as a special-purpose IPv4 address, hosts can be configured with IPv4 /32 addresses and this default gateway, eliminating the need for any IPv4 subnet or address resolution mechanisms.</t>
+      <t>In environments where host operating systems do not support this special behavior natively, interoperability can still be achieved. Routers may be configured to respond to ARP requests for 192.0.0.11 with their own link-layer address. This allows traditional ARP-based stacks to reach the IPv6-based next hop using standard IPv4 behavior.</t>
+      <t>Additionally, the use of a fixed, well-known gateway address enables DHCPv4 servers to signal this behavior without requiring any protocol extensions. By including a static route for 192.0.0.11 in DHCP responses, backward-compatible clients can operate normally, while enhanced clients can interpret the address as a signal to use IPv6 neighbor discovery instead of ARP.</t>
+    </section>
+    <section title="Host Behavior and Next-Hop Resolution" anchor="host-behavior">
+      <t>When a host is configured to use 192.0.0.11 as its IPv4 default gateway, the host's operating system should implement the following logic:</t>
+      <t>- Upon startup or interface configuration, the host listens for IPv6 Router Advertisements (RAs) and records the IPv6 default gateway and associated link-layer address via Neighbor Discovery.</t>
+      <t>- When sending an IPv4 packet where the next hop is 192.0.0.11, instead of performing an ARP resolution, the host stack consults its IPv6 neighbor cache for the link-layer address associated with the IPv6 default gateway.</t>
+      <t>- If the IPv6 default gateway is known, and the link-layer address is valid and reachable, the IPv4 packet is sent directly using that link-layer destination address.</t>
+      <t>- If the IPv6 gateway is not yet known or reachable, the IPv4 packet should be queued or dropped per implementation policy, and a Neighbor Solicitation initiated for the IPv6 gateway.</t>
+      <t>- In the host's route table, 192.0.0.11 should appear as a host route (i.e., 192.0.0.11/32), acting as the sole gateway for all IPv4 destinations.</t>
+      <t>- Optionally, operating systems can expose this behavior via a flag or route attribute indicating that 192.0.0.11 is resolved via IPv6 rather than ARP.</t>
+      <t>This behavior aligns with existing stack logic while decoupling IPv4 forwarding from IPv4-centric neighbor discovery, enabling a cleaner integration into IPv6-only environments.</t>
+      <t>Hosts that do not implement this behavior will typically fall back to performing an ARP request for 192.0.0.11, as they interpret it as a conventional next-hop address. If no response is received, packets will be dropped or the destination deemed unreachable. This results in loss of IPv4 connectivity unless the router or gateway on the segment is explicitly configured to respond to ARP requests for 192.0.0.11 with its own MAC address. While this workaround enables compatibility, it reintroduces some reliance on ARP, which this mechanism aims to eliminate.</t>
+    </section>
+    <section title="Compatibility Considerations" anchor="compatibility">
+      <t>- Hosts continue to use standard IPv4 protocol semantics and packet formats.</t>
+      <t>- Applications requiring IPv4 continue to function as expected.</t>
+      <t>- No changes are required to the IPv4 packet format.</t>
+      <t>- The only change is that 192.0.0.11 is interpreted by the host stack as an indicator to use the link-layer information from the IPv6 default gateway.</t>
+      <t>- In environments where this behavior is not supported:</t>
+      <t>  - Routers may respond to ARP requests for 192.0.0.11 with their own MAC address, enabling compatibility with legacy stacks.</t>
+      <t>  - DHCPv4 responses can include a route for 192.0.0.11, signaling the expected next hop while remaining valid in all standard implementations.</t>
+      <t>- These fallback mechanisms allow the address to function in legacy environments while enabling enhanced behavior where supported.</t>
+    </section>
+    <section title="Requested IANA Assignment" anchor="iana">
+      <t>This document requests the following addition to the IANA IPv4 Special-Purpose Address Registry:</t>
+      <texttable style="all">
+        <ttcol>Address Block</ttcol>
+        <ttcol>Name</ttcol>
+        <ttcol>RFC</ttcol>
+        <ttcol>Allocation Date</ttcol>
+        <ttcol>Termination Date</ttcol>
+        <ttcol>Source</ttcol>
+        <ttcol>Destination</ttcol>
+        <ttcol>Forwardable</ttcol>
+        <ttcol>Global</ttcol>
+        <ttcol>Reserved-by-Protocol</ttcol>
+        <c>192.0.0.11/32</c>
+        <c>IPv6-Resolved Default Gateway</c>
+        <c>[This document]</c>
+        <c>[To be assigned]</c>
+        <c>N/A</c>
+        <c>False</c>
+        <c>True</c>
+        <c>True</c>
+        <c>No</c>
+        <c>No</c>
+      </texttable>
+    </section>
+    <section title="Security Considerations" anchor="security">
+      <t>This approach reduces ARP-related attack surfaces by removing ARP from the network. It assumes integrity of IPv6 neighbor discovery, and any associated risks (e.g., spoofed RAs) are equivalent to standard IPv6 host risks.</t>
+      <t>One secondary benefit is the elimination of subnet scanning risks within the IPv4 space, as the /32 configuration and absence of ARP prevent enumeration of other IPv4 hosts on the link. Without a subnet and with no shared broadcast resolution mechanism, scanning for active IPv4 addresses becomes infeasible, reducing exposure to lateral reconnaissance techniques.</t>
+    </section>
+    <section title="Informative References" anchor="references">
+      <reference anchor="RFC4861">
+        <front>
+          <title>Neighbor Discovery for IP version 6 (IPv6)</title>
+          <author initials="T." surname="Narten"/>
+          <author initials="E." surname="Nordmark"/>
+          <author initials="W." surname="Simpson"/>
+          <author initials="H." surname="Soliman"/>
+          <date month="September" year="2007"/>
+        </front>
+      </reference>
+      <reference anchor="RFC8174">
+        <front>
+          <title>Ambiguity of Uppercase vs Lowercase in RFC 2119 Key Words</title>
+          <author initials="B." surname="Leiba"/>
+          <date month="May" year="2017"/>
+        </front>
+      </reference>
+      <reference anchor="RFC7600">
+        <front>
+          <title>IPv4 Run-Out and IPv4-Only Terminology Considerations</title>
+          <author initials="W." surname="Kumari"/>
+          <author initials="P." surname="Ebersman"/>
+          <date month="August" year="2015"/>
+        </front>
+      </reference>
+      <reference anchor="RFC7606">
+        <front>
+          <title>Revised Error Handling for BGP UPDATE Messages</title>
+          <author initials="E." surname="Chen"/>
+          <author initials="J." surname="Scudder"/>
+          <date month="August" year="2015"/>
+        </front>
+      </reference>
+      <reference anchor="v4-via-v6">
+        <front>
+          <title>IPv4 Unicast Transmission Using an IPv6 Fabric</title>
+          <author surname="Ananthakrishnan"/>
+          <date month="March" year="2024"/>
+        </front>
+      </reference>
+    </section>
+  </middle>
+  <back>
+    <section title="Author's Address">
+      <address>
+        <postal>
+          <street>Novoserve B.V.</street>
+        </postal>
+        <email>remco@novoserve.com</email>
+      </address>
+    </section>
+  </back>
+</rfc>
