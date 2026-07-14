@@ -1,19 +1,92 @@
 # v4-with-v6-nh
-In Linux, use your IPv6 default gateway ethernet next-hop address as the next hop for IPv4 traffic. 
-This allows you to set individual IPv4 addresses on a public interface without ever defining a local IPv4 subnet or gateway.
 
-Barely tested, may insult your boss and harm your dog. Proceed with caution. 
+Reference implementation for
+[draft-vanmook-intarea-ipv6-resolved-gateway](https://datatracker.ietf.org/doc/draft-vanmook-intarea-ipv6-resolved-gateway/):
+IPv4 connectivity on IPv6-only network segments via the special-purpose
+gateway address **192.0.0.11**, resolved from the IPv6 neighbor cache
+instead of ARP. No IPv4 subnets, no tunnelling, no translation — IPv4
+packets are carried natively, end to end.
 
-## Bonus: 
-No ARP. Also: no IPv4 subnets, no zero, router or broadcast IPs. Get 8 usable IPv4 addresses out of a /29. Did I say no ARP?
+## Layout
 
-On the side of the router, you either:
-- need to have a routing daemon running which sets the next hop for the IP to one of its v6 addresses
-- set a static ARP entry (ugly but works almost everywhere)
+```
+host/    v4gwd.py — Linux host daemon implementing draft Section 4
+         (sentinel detection, RFC 4191 router selection, route
+         programming via IPv6 next hop) + systemd unit;
+         systemd-networkd/ — native networkd patch;
+         freebsd/ — C daemon for FreeBSD 13.1+ (RFC 5549 data plane)
+         with dhclient-exit-hooks and rc.d integration
+lab/     network-namespace lab reproducing the Section 5.1 topology,
+         with conformance tests (incl. a zero-ARP assertion);
+         freebsd/ — equivalent vnet-jail lab
+router/  vendor configuration examples for the Section 5 router side
+         (RFC 8950 return-path routes, 192.0.0.11 termination, the
+         unmodified-host ARP tier, and §5.2 forwarding enforcement)
+         across five commercial platforms
+docs/    conformance matrix: every normative statement in Sections 4–5
+         mapped to code, kernel behaviour, or a documented gap
+legacy/  the original 2024/25 mechanism this work grew out of
+         (IPv4 default route follows the IPv6 default gateway) —
+         retained as prior art; not draft-conformant
+```
 
-## Work in progress:
-- fully daemonized in C
-- Python version
-- Bird configuration to use OSPFv3 to advertise your local IPv4 addresses with your IPv6 next-hop
-- Datacenter level API to assign, register and deregister local IPv4 addresses with your IPv6 next-hop using a route reflector
+## Quick start
 
+Requirements: Linux ≥ 5.2 (IPv4 routes with IPv6 next hops), Python 3,
+pyroute2, iproute2, tcpdump.
+
+```
+pip install pyroute2
+
+# bring up the four-namespace lab in DHCP-driven (sentinel) mode
+sudo lab/topology.sh up --sentinel
+
+# run the conformance tests
+sudo lab/run-tests.sh
+
+sudo lab/topology.sh down
+```
+
+On a real host with a DHCPv4 server handing out `192.0.0.11` as
+Option 3 (router):
+
+```
+sudo host/v4gwd.py --require-sentinel eth0
+```
+
+or install `host/systemd/v4gwd@.service` and
+`systemctl enable --now v4gwd@eth0`.
+
+## How it maps to the draft
+
+Linux natively resolves IPv4 routes with an IPv6 next hop through
+Neighbor Discovery — never ARP. `v4gwd` uses this to implement the
+draft's Section 4 host behaviour from user space: it detects the
+192.0.0.11 sentinel, selects an IPv6 default router per RFC 4191,
+installs `default via inet6 <router>`, tracks router-list and neighbor
+cache changes over netlink, and withdraws its route when the sentinel
+disappears (DHCPv4 lease expiry) or no usable router remains.
+
+A user-space daemon cannot queue individual packets pending first RA
+reception; this and other approximations are documented precisely in
+[docs/conformance.md](docs/conformance.md). A native in-kernel
+implementation would close those gaps.
+
+## Status
+
+- Draft: -00 submitted; IntArea presentation scheduled for IETF 126
+  (Vienna, July 2026).
+- Host implementations: Linux user-space daemon (functional, Linux 6.x),
+  systemd-networkd native patch (compiles clean, integration test
+  included), FreeBSD user-space daemon (syntax-validated, untested).
+- Router-side: configuration-only; example configs for IOS XR, JunOS,
+  SR OS, EOS and RouterOS in [router/vendor-configs/](router/vendor-configs/)
+  (RFC 8950 return-path, 192.0.0.11 termination and ARP tier, §5.2
+  enforcement). Lab behaviour verified on Linux/FreeBSD; commercial
+  configs not yet hardware-tested.
+- Independent implementation: FRRouting implementation offered
+  (D. Lamparter).
+
+## License
+
+See [LICENSE](LICENSE).

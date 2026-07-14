@@ -1,0 +1,32 @@
+#!/bin/sh
+# PROVIDE: v4gwd
+# REQUIRE: NETWORKING
+# KEYWORD: shutdown
+#
+# rc.conf:
+#   v4gwd_enable="YES"
+#   v4gwd_interface="em0"
+#   v4gwd_flags="-f /var/run/v4gwd.em0.router"   # or "-r", or empty (lab)
+
+. /etc/rc.subr
+
+name=v4gwd
+rcvar=v4gwd_enable
+command=/usr/local/sbin/v4gwd
+pidfile=/var/run/${name}.pid
+
+load_rc_config $name
+: ${v4gwd_enable:="NO"}
+: ${v4gwd_interface:=""}
+
+command_args="${v4gwd_interface}"
+start_precmd="v4gwd_precmd"
+
+v4gwd_precmd()
+{
+	if [ -z "${v4gwd_interface}" ]; then
+		err 1 "v4gwd_interface not set in rc.conf"
+	fi
+}
+
+run_rc_command "$1"
