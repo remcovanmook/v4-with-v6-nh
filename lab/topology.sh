@@ -66,16 +66,20 @@ up() {
     ip -n v4nh-r2 -6 addr add 2001:db8:2::a/64 dev b1
 
     # 192.0.0.11 local termination on host-facing interfaces (draft
-    # s5.2: interface-scoped, echo SHOULD be answered). The s5.2
-    # forwarding prohibition is enforced here with TTL=1 on
-    # originations (the only v4 source on a conformant router is
-    # 192.0.0.11, so the default-TTL sysctl suffices; transit is
-    # unaffected). An egress nftables rule on core-facing interfaces
-    # is the equally valid -- and more complete -- alternative:
+    # s5.2: interface-scoped, echo SHOULD be answered). Adding it with
+    # "scope link" gets the interface-scoping for free from iproute2: a
+    # link-scoped address is never selected as a source toward an
+    # off-link destination and its connected route stays link-scoped
+    # (nothing to redistribute as a subnet) -- exactly the s5.2
+    # "interface-scoped, not injected" property, with no extra rules.
+    # TTL=1 on originations then caps any self-sourced packet at one hop
+    # -- the on-wire signal T4 checks -- while transit is unaffected. An
+    # egress nftables rule on core-facing interfaces is the equally valid
+    # -- and, for transit, more complete -- alternative:
     #   nft add rule inet f out oif r12 ip saddr 192.0.0.11 drop
-    # The tests (T5) assert the outcome, not the mechanism.
-    ip -n v4nh-r1 addr add 192.0.0.11/32 dev a1
-    ip -n v4nh-r2 addr add 192.0.0.11/32 dev b1
+    # The tests (T4/T5) assert the outcome, not the mechanism.
+    ip -n v4nh-r1 addr add 192.0.0.11/32 scope link dev a1
+    ip -n v4nh-r2 addr add 192.0.0.11/32 scope link dev b1
     for n in v4nh-r1 v4nh-r2; do
         ip netns exec "$n" sysctl -qw net.ipv4.ip_default_ttl=1
     done
