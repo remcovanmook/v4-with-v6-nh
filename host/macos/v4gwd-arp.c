@@ -237,6 +237,72 @@ router_lladdr(const struct in6_addr *gw, uint8_t mac[6])
         return found;
 }
 
+/*
+ * Is *our* static ARP entry for 192.0.0.11 still in the kernel with the
+ * expected MAC?  An external flush -- a DHCP reconfigure, an interface
+ * flap, `arp -d -a` -- can drop it without any routing-socket message we
+ * act on, so the steady-state check verifies against the live AF_INET
+ * link-layer table (RTF_LLINFO, what `arp -a` reads) rather than trusting
+ * the arp_installed flag alone.
+ *
+ * The entry must be RTF_STATIC ("permanent"): once ours is gone, the host
+ * resolves the gateway by ordinary ARP, leaving a *dynamic* entry with the
+ * same (correct) MAC.  Accepting that would defeat the daemon -- the whole
+ * point is that the host never ARPs for 192.0.0.11 -- so a non-static
+ * entry counts as absent and we re-assert the permanent one over it.
+ */
+static bool
+arp_entry_present(const uint8_t mac[6])
+{
+        int mib[6] = { CTL_NET, PF_ROUTE, 0, AF_INET, NET_RT_FLAGS, RTF_LLINFO };
+        char *buf = NULL, *p, *end;
+        size_t len = 0;
+        bool found = false;
+
+        if (sysctl(mib, 6, NULL, &len, NULL, 0) < 0 || len == 0)
+                return false;
+        if ((buf = malloc(len)) == NULL)
+                return false;
+        if (sysctl(mib, 6, buf, &len, NULL, 0) < 0) {
+                free(buf);
+                return false;
+        }
+
+        end = buf + len;
+        for (p = buf; p < end; ) {
+                struct rt_msghdr *rtm = (struct rt_msghdr *)(void *)p;
+                struct sockaddr *rti[RTAX_MAX];
+                struct sockaddr_in *dst;
+                struct sockaddr_dl *sdl;
+
+                p += rtm->rtm_msglen;
+                if (rtm->rtm_version != RTM_VERSION)
+                        continue;
+                if (rtm->rtm_index != ifindex)
+                        continue;
+
+                get_rti_info(rtm->rtm_addrs, (struct sockaddr *)(rtm + 1), rti);
+                if (rti[RTAX_DST] == NULL || rti[RTAX_GATEWAY] == NULL)
+                        continue;
+                if (rti[RTAX_DST]->sa_family != AF_INET ||
+                    rti[RTAX_GATEWAY]->sa_family != AF_LINK)
+                        continue;
+
+                dst = (struct sockaddr_in *)(void *)rti[RTAX_DST];
+                if (dst->sin_addr.s_addr != (in_addr_t)SENTINEL_ADDR)
+                        continue;
+
+                sdl = (struct sockaddr_dl *)(void *)rti[RTAX_GATEWAY];
+                found = (sdl->sdl_alen == 6 &&
+                    memcmp(LLADDR(sdl), mac, 6) == 0 &&
+                    (rtm->rtm_flags & RTF_STATIC));
+                break;
+        }
+
+        free(buf);
+        return found;
+}
+
 /* Run a command to completion with output discarded; 0 on exit status 0. */
 static int
 run(char *const argv[])
@@ -278,7 +344,13 @@ install(const uint8_t mac[6])
         char *sv[] = { "/usr/sbin/arp", "-s", SENTINEL_STR, NULL,
             "ifscope", NULL, NULL };
 
-        if (arp_installed && memcmp(installed_mac, mac, 6) == 0)
+        /*
+         * Re-assert if the kernel entry is gone even when our flag still
+         * says installed: an external flush must not leave 192.0.0.11
+         * unresolved until the router's MAC happens to change.
+         */
+        if (arp_installed && memcmp(installed_mac, mac, 6) == 0 &&
+            arp_entry_present(mac))
                 return;
 
         mac_str(mac, macstr);

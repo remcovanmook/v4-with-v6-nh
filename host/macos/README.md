@@ -26,7 +26,10 @@ daemon:
    and IPv4 frames leave addressed to it — byte-for-byte what the RFC 5549
    realization puts on the wire;
 4. keeps the entry in sync as the IPv6 default router or its MAC changes,
-   and removes it when no usable router remains.
+   re-asserts it if anything external drops or replaces it (a DHCP
+   reconfigure or interface flap can flush the ARP table, after which the
+   host would otherwise resolve 192.0.0.11 by ordinary ARP), and removes
+   it when no usable router remains.
 
 No ARP is ever emitted for 192.0.0.11 (the static entry pre-empts it) and
 the link-layer address comes from the ND cache, so the draft's Section 4
