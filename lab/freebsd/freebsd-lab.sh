@@ -176,27 +176,42 @@ up() {
 
 test_() {
     P1=$(mktemp); P2=$(mktemp); P3=$(mktemp)
-    jexec ${JPFX}hostA tcpdump -i $HA_IF  -nn arp -w "$P1" 2>/dev/null &
-    T1=$!
-    jexec ${JPFX}r1    tcpdump -i $R1B_IF -nn arp -w "$P2" 2>/dev/null &
-    T2=$!
-    jexec ${JPFX}hostB tcpdump -i $HB_IF  -nn arp -w "$P3" 2>/dev/null &
-    T3=$!
-    sleep 1
+    E1=$(mktemp); E2=$(mktemp); E3=$(mktemp)
+    # --immediate-mode delivers frames to tcpdump as they arrive rather
+    # than buffering them in the kernel BPF device, so nothing is lost by
+    # stopping the capture immediately after the ping -- no drain needed.
+    # -U writes each packet to the savefile as it is captured.
+    jexec ${JPFX}hostA tcpdump --immediate-mode -U -i $HA_IF  -nn arp -w "$P1" 2>"$E1" & T1=$!
+    jexec ${JPFX}r1    tcpdump --immediate-mode -U -i $R1B_IF -nn arp -w "$P2" 2>"$E2" & T2=$!
+    jexec ${JPFX}hostB tcpdump --immediate-mode -U -i $HB_IF  -nn arp -w "$P3" 2>"$E3" & T3=$!
+
+    # Wait until all three captures are live -- tcpdump prints "listening
+    # on" once its BPF device is open -- instead of sleeping a fixed second.
+    k=0
+    while [ $k -lt 100 ]; do
+        if grep -q 'listening on' "$E1" 2>/dev/null &&
+           grep -q 'listening on' "$E2" 2>/dev/null &&
+           grep -q 'listening on' "$E3" 2>/dev/null; then
+            break
+        fi
+        k=$((k + 1))
+        sleep 0.02
+    done
 
     if jexec ${JPFX}hostA ping -c3 -i 0.2 -W2000 203.0.113.5 > /dev/null 2>&1; then
         echo "PASS: T1 IPv4 end-to-end, /32s only, IPv6-only routers"
     else
         echo "FAIL: T1 IPv4 end-to-end ping"
     fi
-    sleep 1; kill $T1 $T2 $T3 2>/dev/null; wait 2>/dev/null || true
+    # SIGINT lets tcpdump flush and close each savefile cleanly.
+    kill -INT $T1 $T2 $T3 2>/dev/null; wait 2>/dev/null || true
 
     ARP=0
     for f in "$P1" "$P2" "$P3"; do
         n=$(tcpdump -r "$f" -nn 2>/dev/null | wc -l | tr -d ' ')
         ARP=$((ARP + n))
     done
-    rm -f "$P1" "$P2" "$P3"
+    rm -f "$P1" "$P2" "$P3" "$E1" "$E2" "$E3"
     if [ "$ARP" -eq 0 ]; then
         echo "PASS: T2 zero ARP frames captured on all links"
     else
