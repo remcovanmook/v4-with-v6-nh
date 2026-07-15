@@ -18,7 +18,16 @@ set -eu
 
 JPFX=v4nh
 V4GWD="${V4GWD:-$(cd "$(dirname "$0")/../../host/freebsd" && pwd)/v4gwd}"
-STATE="/var/run/${JPFX}-lab.env"
+RUNDIR="${TMPDIR:-/tmp}"   # all runtime artefacts (pidfiles, rtadvd conf)
+
+# Predictable, role-based interface names (owner_peer).  A renamed
+# interface keeps its name across the vnet move, so up/test/down can all
+# reference these constants with no shared state file.  (An ifconfig
+# group would be simpler, but group membership is *not* preserved across
+# the vnet move, so it can't enumerate interfaces once they are in jails.)
+HA_IF=hostA_r1;   R1A_IF=r1_hostA   # link a: hostA <-> r1
+R1B_IF=r1_r2;     R2B_IF=r2_r1      # link b: r1   <-> r2
+R2C_IF=r2_hostB;  HB_IF=hostB_r2    # link c: r2   <-> hostB
 
 
 lladdr() {  # lladdr <jail> <iface>
@@ -31,23 +40,17 @@ up() {
         jail -c name=${JPFX}$j vnet persist
     done
 
-    # epair units are assigned by the kernel -- the cloner needs a
-    # numeric unit, not a letter, so "ifconfig epair create" is the only
-    # portable form.  Each call prints its a-side (epairNa); the peer is
-    # epairNb.  Record the names for test/down.  Links: la=hostA-R1,
-    # lb=R1-R2, lc=R2-hostB.
-    la=$(ifconfig epair create); HA_IF=$la;  R1A_IF=${la%a}b
-    lb=$(ifconfig epair create); R1B_IF=$lb; R2B_IF=${lb%a}b
-    lc=$(ifconfig epair create); R2C_IF=$lc; HB_IF=${lc%a}b
-
-    cat > "$STATE" <<EOF
-HA_IF=$HA_IF
-R1A_IF=$R1A_IF
-R1B_IF=$R1B_IF
-R2B_IF=$R2B_IF
-R2C_IF=$R2C_IF
-HB_IF=$HB_IF
-EOF
+    # Create three epairs and rename each half to its role-based name.
+    # "ifconfig epair create" is the only portable form (the cloner needs
+    # a numeric unit, not a letter) and prints the a-side (epairNa); the
+    # peer is epairNb.  Renaming both halves up front means test/down need
+    # no record of the kernel-assigned names.
+    for spec in "$HA_IF $R1A_IF" "$R1B_IF $R2B_IF" "$R2C_IF $HB_IF"; do
+        set -- $spec
+        ep=$(ifconfig epair create)
+        ifconfig "$ep" name "$1"
+        ifconfig "${ep%a}b" name "$2"
+    done
 
     ifconfig $HA_IF  vnet ${JPFX}hostA; ifconfig $R1A_IF vnet ${JPFX}r1
     ifconfig $R1B_IF vnet ${JPFX}r1;    ifconfig $R2B_IF vnet ${JPFX}r2
@@ -76,10 +79,22 @@ EOF
     jexec ${JPFX}r2    ifconfig $R2C_IF inet6 2001:db8:2::a/64
     jexec ${JPFX}hostB ifconfig $HB_IF inet 203.0.113.5/32 up
     jexec ${JPFX}hostB ifconfig $HB_IF inet6 2001:db8:2::2/64
-    sleep 2  # DAD
 
-    R1_B=$(lladdr r1 $R1B_IF);  R2_B=$(lladdr r2 $R2B_IF)
-    HA=$(lladdr hostA $HA_IF);  HB=$(lladdr hostB $HB_IF)
+    # Wait for the link-local addresses we depend on to be generated,
+    # rather than sleeping a fixed interval for DAD: read them in a loop
+    # until all four are present.  (DAD completing before the addresses
+    # are used as an RS/traffic source is covered by the rtsol/route
+    # solicitation below, which blocks on an RA round-trip.)
+    n=0
+    while [ $n -lt 40 ]; do
+        R1_B=$(lladdr r1 $R1B_IF);  R2_B=$(lladdr r2 $R2B_IF)
+        HA=$(lladdr hostA $HA_IF);  HB=$(lladdr hostB $HB_IF)
+        if [ -n "$R1_B" ] && [ -n "$R2_B" ] && [ -n "$HA" ] && [ -n "$HB" ]; then
+            break
+        fi
+        n=$((n + 1))
+        sleep 0.25
+    done
 
     # Hosts learn their IPv6 default router from Router Advertisements
     # (rtadvd, started below).  v4gwd selects its next hop from the ND6
@@ -106,10 +121,10 @@ EOF
     # stable between RAs.
     for pair in "r1 $R1A_IF" "r2 $R2C_IF"; do
         set -- $pair
-        conf="/var/run/${JPFX}-ra-$2.conf"
+        conf="${RUNDIR}/${JPFX}-ra-$2.conf"
         printf '%s:\\\n\t:noifprefix:mininterval#3:maxinterval#4:rltime#1800:\n' \
             "$2" > "$conf"
-        jexec ${JPFX}$1 rtadvd -c "$conf" -p "/var/run/${JPFX}-rtadvd-$2.pid" "$2"
+        jexec ${JPFX}$1 rtadvd -c "$conf" -p "${RUNDIR}/${JPFX}-rtadvd-$2.pid" "$2"
     done
 
     # Solicit an immediate RA on each host.  rtadvd delays its first
@@ -140,9 +155,9 @@ EOF
     # Host daemons (draft Section 4). -f redirects the daemon's stdio to
     # /dev/null (v4gwd logs to syslog); without it the daemon inherits
     # our stdout and a piped/non-interactive "up" hangs waiting on EOF.
-    daemon -f -p /var/run/${JPFX}-hostA.pid \
+    daemon -f -p ${RUNDIR}/${JPFX}-hostA.pid \
         jexec ${JPFX}hostA "${V4GWD}" $HA_IF
-    daemon -f -p /var/run/${JPFX}-hostB.pid \
+    daemon -f -p ${RUNDIR}/${JPFX}-hostB.pid \
         jexec ${JPFX}hostB "${V4GWD}" $HB_IF
 
     # Confirm both daemons have installed the IPv4 default before returning.
@@ -160,11 +175,6 @@ EOF
 }
 
 test_() {
-    if [ -f "$STATE" ]; then
-        . "$STATE"
-    else
-        echo "no lab state ($STATE); run '$0 up' first" >&2; exit 1
-    fi
     P1=$(mktemp); P2=$(mktemp); P3=$(mktemp)
     jexec ${JPFX}hostA tcpdump -i $HA_IF  -nn arp -w "$P1" 2>/dev/null &
     T1=$!
@@ -174,7 +184,7 @@ test_() {
     T3=$!
     sleep 1
 
-    if jexec ${JPFX}hostA ping -c3 -W2000 203.0.113.5 > /dev/null 2>&1; then
+    if jexec ${JPFX}hostA ping -c3 -i 0.2 -W2000 203.0.113.5 > /dev/null 2>&1; then
         echo "PASS: T1 IPv4 end-to-end, /32s only, IPv6-only routers"
     else
         echo "FAIL: T1 IPv4 end-to-end ping"
@@ -195,25 +205,28 @@ test_() {
 }
 
 down() {
-    for f in /var/run/${JPFX}-hostA.pid /var/run/${JPFX}-hostB.pid; do
+    for f in ${RUNDIR}/${JPFX}-hostA.pid ${RUNDIR}/${JPFX}-hostB.pid; do
         [ -f "$f" ] && kill "$(cat "$f")" 2>/dev/null || true
         rm -f "$f"
+    done
+    # SIGKILL rtadvd *before* removing the jails.  On a normal signal it
+    # sends its final zero-lifetime RAs (MAX_FINAL_RTR_ADVERTISEMENTS),
+    # which makes "jail -r" on each router block ~10 s waiting for it;
+    # SIGKILL skips that.  Jails share the host PID namespace, so the
+    # recorded rtadvd PIDs are killable from here.
+    for f in ${RUNDIR}/${JPFX}-rtadvd-*.pid; do
+        [ -f "$f" ] && kill -9 "$(cat "$f")" 2>/dev/null || true
     done
     for j in hostA r1 r2 hostB; do
         jail -r ${JPFX}$j 2>/dev/null || true
     done
-    # rtadvd runs inside the router jails and dies with them; clean up the
-    # pidfiles and generated configs it leaves on the shared filesystem.
-    rm -f /var/run/${JPFX}-ra-*.conf /var/run/${JPFX}-rtadvd-*.pid
-    # epairs return to the host vnet when their jail is removed; destroy
-    # any that survived (destroying either half removes the pair).
-    if [ -f "$STATE" ]; then
-        . "$STATE"
-        for i in "$HA_IF" "$R1B_IF" "$R2C_IF"; do
-            ifconfig "$i" destroy 2>/dev/null || true
-        done
-        rm -f "$STATE"
-    fi
+    rm -f ${RUNDIR}/${JPFX}-ra-*.conf ${RUNDIR}/${JPFX}-rtadvd-*.pid
+    # epairs are destroyed with their jail; destroy any that survived
+    # (destroying either half removes the pair) by their fixed a-side
+    # names -- the halves created above.
+    for i in "$HA_IF" "$R1B_IF" "$R2C_IF"; do
+        ifconfig "$i" destroy 2>/dev/null || true
+    done
     echo "Lab down."
 }
 
