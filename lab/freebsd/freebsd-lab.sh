@@ -101,8 +101,9 @@ EOF
 
     # Routers advertise themselves as the IPv6 default router toward the
     # hosts.  noifprefix keeps the RA to a link-local default only (no
-    # SLAAC prefix); short min/max intervals converge in seconds while a
-    # long router lifetime keeps the entry stable between RAs.
+    # SLAAC prefix); short min/max intervals get the first unsolicited RA
+    # out within seconds while a long router lifetime keeps the entry
+    # stable between RAs.
     for pair in "r1 $R1A_IF" "r2 $R2C_IF"; do
         set -- $pair
         conf="/var/run/${JPFX}-ra-$2.conf"
@@ -111,29 +112,42 @@ EOF
         jexec ${JPFX}$1 rtadvd -c "$conf" -p "/var/run/${JPFX}-rtadvd-$2.pid" "$2"
     done
 
+    # Solicit an immediate RA on each host.  rtadvd delays its first
+    # *unsolicited* RA by up to 16 s (RFC 4861), but answers a Router
+    # Solicitation within half a second.  rtsol sends the RS and exits
+    # once a valid RA arrives -- plain, no -1 (some FreeBSD builds reject
+    # that flag).  Best-effort: the poll below still covers a missed
+    # reply, falling back to rtadvd's unsolicited cycle.
+    timeout 8 jexec ${JPFX}hostA rtsol $HA_IF & ra=$!
+    timeout 8 jexec ${JPFX}hostB rtsol $HB_IF & rb=$!
+    wait $ra || true
+    wait $rb || true
+
+    # Wait for both hosts to learn the router from an RA (a non-empty ND6
+    # default router list).  Starting the daemons only after this lets
+    # their startup reconcile install the IPv4 default immediately, rather
+    # than waiting out their 15 s periodic reconcile.
+    n=0
+    while [ $n -lt 40 ]; do
+        if jexec ${JPFX}hostA ndp -r 2>/dev/null | grep -q fe80 &&
+           jexec ${JPFX}hostB ndp -r 2>/dev/null | grep -q fe80; then
+            break
+        fi
+        n=$((n + 1))
+        sleep 0.5
+    done
+
     # Host daemons (draft Section 4). -f redirects the daemon's stdio to
     # /dev/null (v4gwd logs to syslog); without it the daemon inherits
     # our stdout and a piped/non-interactive "up" hangs waiting on EOF.
-    # Start them *before* soliciting the RA, so they are already watching
-    # the routing socket when the RA installs the IPv6 default and can
-    # reconcile immediately rather than on their periodic (15 s) timer.
     daemon -f -p /var/run/${JPFX}-hostA.pid \
         jexec ${JPFX}hostA "${V4GWD}" $HA_IF
     daemon -f -p /var/run/${JPFX}-hostB.pid \
         jexec ${JPFX}hostB "${V4GWD}" $HB_IF
 
-    # Prompt an immediate RA so the hosts converge now rather than on
-    # rtadvd's next cycle -- the kernel's own RS burst fired at interface
-    # bring-up, before rtadvd existed. rtsol -1 exits as soon as a valid
-    # RA arrives; the timeout is only a safety net (rtadvd's periodic RAs
-    # would converge the hosts regardless).
-    timeout 8 jexec ${JPFX}hostA rtsol -1 $HA_IF || true
-    timeout 8 jexec ${JPFX}hostB rtsol -1 $HB_IF || true
-
-    # Block until both daemons have installed the IPv4 default route
-    # (RA convergence + reconcile) instead of guessing a fixed delay.
+    # Confirm both daemons have installed the IPv4 default before returning.
     n=0
-    while [ $n -lt 40 ]; do
+    while [ $n -lt 20 ]; do
         if jexec ${JPFX}hostA netstat -rn -f inet 2>/dev/null | grep -q '^default' &&
            jexec ${JPFX}hostB netstat -rn -f inet 2>/dev/null | grep -q '^default'; then
             break
