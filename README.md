@@ -76,9 +76,12 @@ implementation would close those gaps.
 
 - Draft: -00 submitted; IntArea presentation scheduled for IETF 126
   (Vienna, July 2026).
-- Host implementations: Linux user-space daemon (functional, Linux 6.x),
-  systemd-networkd native patch (compiles clean, integration test
-  included), FreeBSD user-space daemon (syntax-validated, untested).
+- Host implementations, all verified on real systems: Linux user-space
+  daemon (netns lab, 6/6 conformance tests on Fedora 44 / kernel 6.19);
+  systemd-networkd native patch (applies to systemd main, builds
+  warning-free, `test-network` integration test 100/100); FreeBSD
+  user-space daemon (vnet-jail lab, connectivity + zero-ARP on
+  FreeBSD 15.1).
 - Router-side: configuration-only; example configs for IOS XR, JunOS,
   SR OS, EOS and RouterOS in [router/vendor-configs/](router/vendor-configs/)
   (RFC 8950 return-path, 192.0.0.11 termination and ARP tier, §5.2

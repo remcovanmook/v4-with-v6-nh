@@ -2,15 +2,17 @@
 
 `0001-network-support-IPv6-resolved-IPv4-gateway-192.0.0.1.patch`
 implements the draft's Section 4 host behaviour natively in
-systemd-networkd (patch against systemd main, July 2026; compiles
-warning-free), behind an opt-in `[DHCPv4] UseIPv6ResolvedGateway=`
+systemd-networkd (patch against systemd main; applies with `git am` and
+compiles warning-free), behind an opt-in `[DHCPv4] UseIPv6ResolvedGateway=`
 boolean (default false), with a `systemd.network(5)` man page entry.
 Router-preference ties break deterministically (lowest address).
 Lease renewal and loss are handled by networkd's existing DHCPv4 route
 mark/sweep. Pre-5.2 kernels (no `RTA_VIA` for IPv4) are detected and
 the route is skipped with a warning. An integration test in
 `test-network` drives the mechanism end to end using networkd's own
-DHCP server (`Router=192.0.0.11`) and `IPv6SendRA=`.
+DHCP server (`Router=192.0.0.11`) and `IPv6SendRA=`, asserting the
+`default via inet6 …` route, the absence of an ARP-resolvable gateway,
+and survival across an RA refresh.
 
 Because networkd runs the DHCPv4 client and the NDisc (RA) state
 machine in one process, this implementation avoids the split-stack IPC
@@ -26,6 +28,12 @@ consideration in the draft's Section 6 entirely:
   behaviour; networkd's own route queueing covers the interim).
 - RFC 3442 classless-static-route precedence over the Router option is
   preserved.
+
+Validated on Fedora 44 (systemd main, kernel 6.19): the patch applies
+with `git am`, `systemd-networkd` builds warning-free, and the
+`test-network` integration test passes 100/100 runs (the deferred
+DHCP-before-RA path included — a newly learned default router
+re-evaluates the pending IPv4 default via the NDisc router handler).
 
 Build:
 

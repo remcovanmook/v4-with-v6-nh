@@ -1,4 +1,4 @@
-From b4e2b6c6501489b8d86b0d3c1730b93982d9faf0 Mon Sep 17 00:00:00 2001
+From 07563c27e273485380e67ee405bb0c018da12bad Mon Sep 17 00:00:00 2001
 From: Remco van Mook <remco@asteroidhq.com>
 Date: Mon, 13 Jul 2026 22:48:16 +0000
 Subject: [PATCH] network: support IPv6-resolved IPv4 gateway (192.0.0.11)
@@ -35,18 +35,18 @@ with IPv6SendRA=, and re-evaluation across an RA refresh.
  man/systemd.network.xml                       |  21 ++
  src/network/networkd-dhcp4.c                  | 207 ++++++++++++++++++
  src/network/networkd-dhcp4.h                  |   1 +
- src/network/networkd-ndisc.c                  |   9 +
+ src/network/networkd-ndisc.c                  |  13 ++
  src/network/networkd-network-gperf.gperf      |   1 +
  src/network/networkd-network.h                |   1 +
  .../25-dhcp-client-ipv6-resolved-gw.network   |  10 +
  .../25-dhcp-server-ipv6-resolved-gw.network   |  18 ++
- test/test-network/systemd-networkd-tests.py   |  23 ++
- 9 files changed, 291 insertions(+)
+ test/test-network/systemd-networkd-tests.py   |  27 +++
+ 9 files changed, 299 insertions(+)
  create mode 100644 test/test-network/conf/25-dhcp-client-ipv6-resolved-gw.network
  create mode 100644 test/test-network/conf/25-dhcp-server-ipv6-resolved-gw.network
 
 diff --git a/man/systemd.network.xml b/man/systemd.network.xml
-index 6b988e0..7c78621 100644
+index 6b988e0e..7c78621e 100644
 --- a/man/systemd.network.xml
 +++ b/man/systemd.network.xml
 @@ -2913,6 +2913,27 @@ MultiPathRoute=2001:db8::1@eth0</programlisting>
@@ -78,7 +78,7 @@ index 6b988e0..7c78621 100644
          <term><varname>UseTimezone=</varname></term>
          <listitem><para>When true, the timezone received from the DHCP server will be set as timezone
 diff --git a/src/network/networkd-dhcp4.c b/src/network/networkd-dhcp4.c
-index 468c3eb..36e6c16 100644
+index 468c3eb9..36e6c16e 100644
 --- a/src/network/networkd-dhcp4.c
 +++ b/src/network/networkd-dhcp4.c
 @@ -5,10 +5,12 @@
@@ -328,7 +328,7 @@ index 468c3eb..36e6c16 100644
          if (r < 0)
                  return r;
 diff --git a/src/network/networkd-dhcp4.h b/src/network/networkd-dhcp4.h
-index 2d6cc9b..ba43122 100644
+index 2d6cc9bb..ba431229 100644
 --- a/src/network/networkd-dhcp4.h
 +++ b/src/network/networkd-dhcp4.h
 @@ -20,6 +20,7 @@ static inline int dhcp4_start(Link *link) {
@@ -340,7 +340,7 @@ index 2d6cc9b..ba43122 100644
  int link_request_dhcp4_client(Link *link);
  int link_drop_dhcp4_config(Link *link, Network *network);
 diff --git a/src/network/networkd-ndisc.c b/src/network/networkd-ndisc.c
-index 08bb2bf..496cee0 100644
+index 31745b36..09031932 100644
 --- a/src/network/networkd-ndisc.c
 +++ b/src/network/networkd-ndisc.c
 @@ -16,6 +16,7 @@
@@ -373,8 +373,19 @@ index 08bb2bf..496cee0 100644
          return 0;
  }
  
+@@ -2736,6 +2745,10 @@ static int ndisc_router_handler(Link *link, sd_ndisc_router *rt) {
+         if (!link->ndisc_configured)
+                 link_set_state(link, LINK_STATE_CONFIGURING);
+ 
++        /* A newly learned default router may satisfy a deferred
++         * IPv6-resolved IPv4 default gateway (192.0.0.11). */
++        (void) dhcp4_ipv6_resolved_gateway_update(link);
++
+         link_check_ready(link);
+         return 0;
+ }
 diff --git a/src/network/networkd-network-gperf.gperf b/src/network/networkd-network-gperf.gperf
-index 0b598f1..ac49e8b 100644
+index 0b598f13..ac49e8bf 100644
 --- a/src/network/networkd-network-gperf.gperf
 +++ b/src/network/networkd-network-gperf.gperf
 @@ -269,6 +269,7 @@ DHCPv4.UseHostname,                              config_parse_bool,
@@ -386,7 +397,7 @@ index 0b598f1..ac49e8b 100644
  DHCPv4.RequestOptions,                           config_parse_dhcp_request_options,              AF_INET,                                0
  DHCPv4.Anonymize,                                config_parse_bool,                              0,                                      offsetof(Network, dhcp_anonymize)
 diff --git a/src/network/networkd-network.h b/src/network/networkd-network.h
-index 893b302..0f95c0b 100644
+index 893b3022..0f95c0bf 100644
 --- a/src/network/networkd-network.h
 +++ b/src/network/networkd-network.h
 @@ -157,6 +157,7 @@ typedef struct Network {
@@ -399,7 +410,7 @@ index 893b302..0f95c0b 100644
          uint32_t dhcp_advertised_receive_window;
 diff --git a/test/test-network/conf/25-dhcp-client-ipv6-resolved-gw.network b/test/test-network/conf/25-dhcp-client-ipv6-resolved-gw.network
 new file mode 100644
-index 0000000..2add65b
+index 00000000..2add65b6
 --- /dev/null
 +++ b/test/test-network/conf/25-dhcp-client-ipv6-resolved-gw.network
 @@ -0,0 +1,10 @@
@@ -415,7 +426,7 @@ index 0000000..2add65b
 +UseIPv6ResolvedGateway=yes
 diff --git a/test/test-network/conf/25-dhcp-server-ipv6-resolved-gw.network b/test/test-network/conf/25-dhcp-server-ipv6-resolved-gw.network
 new file mode 100644
-index 0000000..fcd943a
+index 00000000..fcd943a3
 --- /dev/null
 +++ b/test/test-network/conf/25-dhcp-server-ipv6-resolved-gw.network
 @@ -0,0 +1,18 @@
@@ -438,10 +449,10 @@ index 0000000..fcd943a
 +PoolSize=50
 +Router=192.0.0.11
 diff --git a/test/test-network/systemd-networkd-tests.py b/test/test-network/systemd-networkd-tests.py
-index c07fb7a..a839a5a 100755
+index c07fb7a4..968459ca 100755
 --- a/test/test-network/systemd-networkd-tests.py
 +++ b/test/test-network/systemd-networkd-tests.py
-@@ -9488,6 +9488,29 @@ class NetworkdDHCPClientTests(unittest.TestCase, Utilities):
+@@ -9488,6 +9488,33 @@ class NetworkdDHCPClientTests(unittest.TestCase, Utilities):
  
          check_json(networkctl_json())
  
@@ -455,6 +466,9 @@ index c07fb7a..a839a5a 100755
 +        start_networkd()
 +        self.wait_online('veth99:routable', 'veth-peer:routable')
 +
++        # The default route may be installed only once an RA has been
++        # received (deferred install), slightly after the link is online.
++        self.wait_route('veth99', r'default via inet6 fe80:[0-9a-f:]+ proto dhcp', ipv='-4')
 +        output = check_output('ip -4 route show dev veth99 default')
 +        print(output)
 +        self.assertRegex(output, r'default via inet6 fe80:[0-9a-f:]+ proto dhcp')
@@ -465,6 +479,7 @@ index c07fb7a..a839a5a 100755
 +        # Re-evaluation: the route must survive an RA refresh.
 +        networkctl('reconfigure', 'veth-peer')
 +        self.wait_online('veth99:routable', 'veth-peer:routable')
++        self.wait_route('veth99', r'default via inet6 fe80:[0-9a-f:]+ proto dhcp', ipv='-4')
 +        output = check_output('ip -4 route show dev veth99 default')
 +        self.assertRegex(output, r'default via inet6 fe80:[0-9a-f:]+ proto dhcp')
 +
@@ -472,5 +487,5 @@ index c07fb7a..a839a5a 100755
          copy_network_unit(
              '25-veth.netdev',
 -- 
-2.43.0
+2.53.0
 
