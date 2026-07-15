@@ -25,12 +25,17 @@ Platform differences vs. the Linux implementations:
   notifications, so RTM_* route messages trigger reconciliation and a
   periodic reconcile (default 15 s, `-i`) backstops preference-only
   router-list changes.
-- **DHCP integration**: dhclient(8) cannot install a default route via
-  192.0.0.11 (no onlink equivalent), so the sentinel signal comes from
+- **DHCP integration**: where dhclient(8) cannot install a default route
+  via 192.0.0.11 (no onlink equivalent), the sentinel signal comes from
   `dhclient-exit-hooks` (install alongside any existing hooks), which
-  maintains a state file consumed with `-f`. `-r` instead checks the
-  FIB for a 192.0.0.11 default route; with neither flag the daemon
+  maintains a state file consumed with `-f`. With neither flag the daemon
   manages the interface unconditionally (lab mode).
+- **`-r` is Linux-oriented, not for FreeBSD**: it watches the FIB for a
+  192.0.0.11 default route, but installing the `-inet6` default *replaces*
+  that route (FreeBSD allows only one default route, unlike Linux's
+  metric-keyed coexistence), so `-r` erases its own sentinel and then
+  withdraws. Use `-f` (whose state file is independent of the FIB) or
+  unconditional mode on FreeBSD.
 
 Build & run:
 
@@ -46,4 +51,8 @@ zero-ARP assertion.
 Status: validated on FreeBSD 15.1-RELEASE. The vnet-jail lab passes
 end-to-end IPv4 connectivity and the zero-ARP assertion; both next-hop
 sources — the RA-learned default router list and the static IPv6
-default-route fallback — are exercised and confirmed.
+default-route fallback — are exercised and confirmed. Also verified on a
+live testbed against a Debian RFC 5549 router (`../../router/debian/`):
+the daemon takes over the DHCP-learned default with an `-inet6` next hop
+(ND-resolved, no ARP for the gateway) and the host reaches the real IPv4
+internet over its `/32`, surviving reboots via the rc.d service.

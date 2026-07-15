@@ -12,21 +12,26 @@
 
 name=v4gwd
 rcvar=v4gwd_enable
-command=/usr/local/sbin/v4gwd
-pidfile=/var/run/${name}.pid
 
 load_rc_config $name
 : ${v4gwd_enable:="NO"}
 : ${v4gwd_interface:=""}
 
-command_args="${v4gwd_interface}"
-start_precmd="v4gwd_precmd"
+# v4gwd runs in the foreground, so wrap it with daemon(8) to background it
+# and maintain a pidfile.  Capture v4gwd_flags into a local and clear the
+# rc variable so rc.subr does not also splice it onto the daemon(8) command.
+_v4gwd_flags="${v4gwd_flags}"
+unset v4gwd_flags
 
+pidfile=/var/run/${name}.pid
+procname=/usr/local/sbin/v4gwd
+command=/usr/sbin/daemon
+command_args="-p ${pidfile} -f ${procname} ${_v4gwd_flags} ${v4gwd_interface}"
+
+start_precmd="v4gwd_precmd"
 v4gwd_precmd()
 {
-	if [ -z "${v4gwd_interface}" ]; then
-		err 1 "v4gwd_interface not set in rc.conf"
-	fi
+	[ -n "${v4gwd_interface}" ] || err 1 "v4gwd_interface not set in rc.conf"
 }
 
 run_rc_command "$1"

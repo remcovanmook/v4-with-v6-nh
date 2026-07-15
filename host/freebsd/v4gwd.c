@@ -249,8 +249,12 @@ install(const struct in6_addr *gw, const char *src)
                 return;
 
         r = route_msg(route_installed ? RTM_CHANGE : RTM_ADD, gw);
-        if (r == -EEXIST) {
-                /* A stale route from a previous run; take it over. */
+        if (!route_installed && (r == -EEXIST || r == -EINVAL)) {
+                /* A default route already exists: a stale one from a
+                 * previous run, or the DHCP-installed "via 192.0.0.11".
+                 * The latter has an AF_INET gateway, so the kernel rejects
+                 * our AF_INET6 RTM_ADD with EINVAL rather than EEXIST.
+                 * Either way, take the route over with RTM_CHANGE. */
                 r = route_msg(RTM_CHANGE, gw);
         }
         if (r < 0) {
