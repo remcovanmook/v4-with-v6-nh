@@ -18,6 +18,7 @@ set -eu
 
 JPFX=v4nh
 V4GWD="${V4GWD:-$(dirname "$0")/../../host/freebsd/v4gwd}"
+STATE="/var/run/${JPFX}-lab.env"
 
 
 lladdr() {  # lladdr <jail> <iface>
@@ -30,13 +31,27 @@ up() {
         jail -c name=${JPFX}$j vnet persist
     done
 
-    # epair a: hostA-R1, epair b: R1-R2, epair c: R2-hostB
-    for p in a b c; do
-        ifconfig epair${p} create > /dev/null
-    done
-    ifconfig epaira0 vnet ${JPFX}hostA; ifconfig epaira1 vnet ${JPFX}r1
-    ifconfig epairb0 vnet ${JPFX}r1;    ifconfig epairb1 vnet ${JPFX}r2
-    ifconfig epairc0 vnet ${JPFX}r2;    ifconfig epairc1 vnet ${JPFX}hostB
+    # epair units are assigned by the kernel -- the cloner needs a
+    # numeric unit, not a letter, so "ifconfig epair create" is the only
+    # portable form.  Each call prints its a-side (epairNa); the peer is
+    # epairNb.  Record the names for test/down.  Links: la=hostA-R1,
+    # lb=R1-R2, lc=R2-hostB.
+    la=$(ifconfig epair create); HA_IF=$la;  R1A_IF=${la%a}b
+    lb=$(ifconfig epair create); R1B_IF=$lb; R2B_IF=${lb%a}b
+    lc=$(ifconfig epair create); R2C_IF=$lc; HB_IF=${lc%a}b
+
+    cat > "$STATE" <<EOF
+HA_IF=$HA_IF
+R1A_IF=$R1A_IF
+R1B_IF=$R1B_IF
+R2B_IF=$R2B_IF
+R2C_IF=$R2C_IF
+HB_IF=$HB_IF
+EOF
+
+    ifconfig $HA_IF  vnet ${JPFX}hostA; ifconfig $R1A_IF vnet ${JPFX}r1
+    ifconfig $R1B_IF vnet ${JPFX}r1;    ifconfig $R2B_IF vnet ${JPFX}r2
+    ifconfig $R2C_IF vnet ${JPFX}r2;    ifconfig $HB_IF  vnet ${JPFX}hostB
 
     for j in hostA r1 r2 hostB; do
         jexec ${JPFX}$j ifconfig lo0 up
@@ -48,50 +63,55 @@ up() {
                                net.inet6.ip6.forwarding=1
     done
 
-    jexec ${JPFX}hostA ifconfig epaira0 inet 198.51.100.1/32 up
-    jexec ${JPFX}hostA ifconfig epaira0 inet6 2001:db8:1::1/64
-    jexec ${JPFX}r1    ifconfig epaira1 inet6 2001:db8:1::a/64
-    jexec ${JPFX}r1    ifconfig epairb0 inet6 auto_linklocal up
-    jexec ${JPFX}r2    ifconfig epairb1 inet6 auto_linklocal up
-    jexec ${JPFX}r2    ifconfig epairc0 inet6 2001:db8:2::a/64
-    jexec ${JPFX}hostB ifconfig epairc1 inet 203.0.113.5/32 up
-    jexec ${JPFX}hostB ifconfig epairc1 inet6 2001:db8:2::2/64
+    jexec ${JPFX}hostA ifconfig $HA_IF inet 198.51.100.1/32 up
+    jexec ${JPFX}hostA ifconfig $HA_IF inet6 2001:db8:1::1/64
+    jexec ${JPFX}r1    ifconfig $R1A_IF inet6 2001:db8:1::a/64
+    jexec ${JPFX}r1    ifconfig $R1B_IF inet6 auto_linklocal up
+    jexec ${JPFX}r2    ifconfig $R2B_IF inet6 auto_linklocal up
+    jexec ${JPFX}r2    ifconfig $R2C_IF inet6 2001:db8:2::a/64
+    jexec ${JPFX}hostB ifconfig $HB_IF inet 203.0.113.5/32 up
+    jexec ${JPFX}hostB ifconfig $HB_IF inet6 2001:db8:2::2/64
     sleep 2  # DAD
 
-    R1_A=$(lladdr r1 epaira1);  R1_B=$(lladdr r1 epairb0)
-    R2_B=$(lladdr r2 epairb1);  R2_C=$(lladdr r2 epairc0)
-    HA=$(lladdr hostA epaira0); HB=$(lladdr hostB epairc1)
+    R1_A=$(lladdr r1 $R1A_IF);  R1_B=$(lladdr r1 $R1B_IF)
+    R2_B=$(lladdr r2 $R2B_IF);  R2_C=$(lladdr r2 $R2C_IF)
+    HA=$(lladdr hostA $HA_IF);  HB=$(lladdr hostB $HB_IF)
 
     # Hosts: IPv6 default router (static stand-in for RA; v4gwd reads
     # the kernel default router list -- to exercise the RA path proper,
     # run rtadvd in r1/r2 instead and use "-r"/-f modes).
-    jexec ${JPFX}hostA route -6 add default "${R1_A}%epaira0" > /dev/null
-    jexec ${JPFX}hostB route -6 add default "${R2_C}%epairc1" > /dev/null
+    jexec ${JPFX}hostA route -6 add default "${R1_A}%${HA_IF}" > /dev/null
+    jexec ${JPFX}hostB route -6 add default "${R2_C}%${HB_IF}" > /dev/null
 
     # Routers: RFC 5549 /32 routes, IPv6 next hops, ND-resolved
-    jexec ${JPFX}r1 route add -host 203.0.113.5  -inet6 "${R2_B}%epairb0" > /dev/null
-    jexec ${JPFX}r1 route add -host 198.51.100.1 -inet6 "${HA}%epaira1"  > /dev/null
-    jexec ${JPFX}r2 route add -host 198.51.100.1 -inet6 "${R1_B}%epairb1" > /dev/null
-    jexec ${JPFX}r2 route add -host 203.0.113.5  -inet6 "${HB}%epairc0"  > /dev/null
-    jexec ${JPFX}r1 route -6 add 2001:db8:2::/64 "${R2_B}%epairb0" > /dev/null
-    jexec ${JPFX}r2 route -6 add 2001:db8:1::/64 "${R1_B}%epairb1" > /dev/null
+    jexec ${JPFX}r1 route add -host 203.0.113.5  -inet6 "${R2_B}%${R1B_IF}" > /dev/null
+    jexec ${JPFX}r1 route add -host 198.51.100.1 -inet6 "${HA}%${R1A_IF}"   > /dev/null
+    jexec ${JPFX}r2 route add -host 198.51.100.1 -inet6 "${R1_B}%${R2B_IF}" > /dev/null
+    jexec ${JPFX}r2 route add -host 203.0.113.5  -inet6 "${HB}%${R2C_IF}"   > /dev/null
+    jexec ${JPFX}r1 route -6 add 2001:db8:2::/64 "${R2_B}%${R1B_IF}" > /dev/null
+    jexec ${JPFX}r2 route -6 add 2001:db8:1::/64 "${R1_B}%${R2B_IF}" > /dev/null
 
     # Host daemons (draft Section 4)
     daemon -p /var/run/${JPFX}-hostA.pid \
-        jexec ${JPFX}hostA "${V4GWD}" epaira0
+        jexec ${JPFX}hostA "${V4GWD}" $HA_IF
     daemon -p /var/run/${JPFX}-hostB.pid \
-        jexec ${JPFX}hostB "${V4GWD}" epairc1
+        jexec ${JPFX}hostB "${V4GWD}" $HB_IF
 
     echo "Lab up. Try: jexec ${JPFX}hostA ping -c3 203.0.113.5"
 }
 
 test_() {
+    if [ -f "$STATE" ]; then
+        . "$STATE"
+    else
+        echo "no lab state ($STATE); run '$0 up' first" >&2; exit 1
+    fi
     P1=$(mktemp); P2=$(mktemp); P3=$(mktemp)
-    jexec ${JPFX}hostA tcpdump -i epaira0 -nn arp -w "$P1" 2>/dev/null &
+    jexec ${JPFX}hostA tcpdump -i $HA_IF  -nn arp -w "$P1" 2>/dev/null &
     T1=$!
-    jexec ${JPFX}r1    tcpdump -i epairb0 -nn arp -w "$P2" 2>/dev/null &
+    jexec ${JPFX}r1    tcpdump -i $R1B_IF -nn arp -w "$P2" 2>/dev/null &
     T2=$!
-    jexec ${JPFX}hostB tcpdump -i epairc1 -nn arp -w "$P3" 2>/dev/null &
+    jexec ${JPFX}hostB tcpdump -i $HB_IF  -nn arp -w "$P3" 2>/dev/null &
     T3=$!
     sleep 1
 
@@ -123,7 +143,15 @@ down() {
     for j in hostA r1 r2 hostB; do
         jail -r ${JPFX}$j 2>/dev/null || true
     done
-    # epairs are destroyed with their vnet jails
+    # epairs return to the host vnet when their jail is removed; destroy
+    # any that survived (destroying either half removes the pair).
+    if [ -f "$STATE" ]; then
+        . "$STATE"
+        for i in "$HA_IF" "$R1B_IF" "$R2C_IF"; do
+            ifconfig "$i" destroy 2>/dev/null || true
+        done
+        rm -f "$STATE"
+    fi
     echo "Lab down."
 }
 
