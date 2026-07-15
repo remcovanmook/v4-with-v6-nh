@@ -63,17 +63,31 @@ changes and requiring no privilege:
       router link-layer        : b8:69:f4:1b:ea:7b (from ND cache)
       would install            : arp -s 192.0.0.11 b8:69:f4:1b:ea:7b ifscope en7
 
+For boot integration, install the daemon and the launchd job (edit the
+interface in the plist first):
+
+    sudo make install                         # -> /usr/local/sbin/v4gwd-arp
+    sudo cp net.vanmook.v4gwd-arp.plist /Library/LaunchDaemons/
+    sudo launchctl bootstrap system /Library/LaunchDaemons/net.vanmook.v4gwd-arp.plist
+
+    # logs: log show --predicate 'process == "v4gwd-arp"' --last 1h
+    # stop: sudo launchctl bootout system/net.vanmook.v4gwd-arp
+
 ## Status
 
-Written and compiled against macOS 26.5.1 (Darwin 25.5.0, arm64), clang
-15. The **discovery path** — following the IPv6 default route and reading
-the router's MAC from the ND cache over the routing socket — is verified
-on a live system: the `-n` dry run reproduces exactly what `route -n get
--inet6 default` and `ndp -an` report.
+Verified end to end on macOS 26 (Darwin 25.x, arm64, clang 15) against a
+live Debian RFC 5549 router (`../../router/debian/`):
 
-The **mutation path** (`arp -s` / `arp -d`) uses documented macOS syntax
-but has not yet been exercised end to end — that needs a real IPv6-only
-segment with an RFC 5549-capable router (or the netns/vnet labs, adapted).
-The underlying mechanism *is* validated OS-agnostically: on the Linux lab,
-a static neighbor entry for 192.0.0.11 pointing at the router's MAC
-carries end-to-end IPv4 with zero ARP frames on the wire.
+- The daemon follows the DHCP-learned IPv6 default router, reads its MAC
+  from the ND cache, and installs the static ARP entry (`arp -n
+  192.0.0.11` shows it `permanent`).
+- With the entry in place the host performs **zero ARP for 192.0.0.11**
+  during traffic (confirmed by capture at the router), and reaches both a
+  target behind the router and the real IPv4 internet (`1.1.1.1`) over its
+  `/32` — from an IPv6-only segment, with no kernel v4-via-v6 support.
+- On shutdown it withdraws the entry cleanly.
+- Runs under launchd across reboots.
+
+The underlying mechanism is also validated OS-agnostically on the Linux
+lab (a static neighbor entry for 192.0.0.11 → the router's MAC carries
+end-to-end IPv4 with zero ARP frames).

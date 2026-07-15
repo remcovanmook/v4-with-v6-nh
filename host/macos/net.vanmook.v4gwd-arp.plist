@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>net.vanmook.v4gwd-arp</string>
+
+	<!-- Set the interface to manage (e.g. en0).  To gate on the
+	     192.0.0.11 sentinel, insert "-r" (IPv4 default via 192.0.0.11
+	     present in the FIB) or "-f" and a state-file path before it. -->
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/sbin/v4gwd-arp</string>
+		<string>en0</string>
+	</array>
+
+	<!-- Start at boot and restart if it exits.  The reconcile loop
+	     handles the network coming up later, so no launchd ordering
+	     against network state is required. -->
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+
+	<key>ProcessType</key>
+	<string>Adaptive</string>
+
+	<!-- v4gwd-arp logs via syslog(3); view with:
+	       log show --predicate 'process == "v4gwd-arp"' --last 1h -->
+</dict>
+</plist>
