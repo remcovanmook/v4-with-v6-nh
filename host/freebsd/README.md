@@ -12,6 +12,13 @@ tie-breaker, and programs `default -inet6 <router>` over a PF_ROUTE
 socket. Kernel support is probed via the
 `kern.features.ipv4_rfc5549_support` feature(3) knob.
 
+The RA-learned router list is the primary source, reflecting real
+deployments. For deployments that instead configure a **static** IPv6
+default route (no Router Advertisements), the daemon falls back to that
+route's gateway — scanning the FIB for an `RTF_STATIC` default and using
+its next hop — but only when the router list is empty, so an RA-learned
+router always wins.
+
 Platform differences vs. the Linux implementations:
 
 - **Events**: rtsock has no neighbour-cache or router-list
@@ -36,6 +43,7 @@ A vnet-jail lab equivalent to the Linux netns lab is in
 `../../lab/freebsd/freebsd-lab.sh` (up | test | down), including the
 zero-ARP assertion.
 
-Status: written against FreeBSD 15 headers (syntax-validated against
-the real headers, not yet run on a live system); needs a FreeBSD
-machine or VM for runtime validation.
+Status: validated on FreeBSD 15.1-RELEASE. The vnet-jail lab passes
+end-to-end IPv4 connectivity and the zero-ARP assertion; both next-hop
+sources — the RA-learned default router list and the static IPv6
+default-route fallback — are exercised and confirmed.

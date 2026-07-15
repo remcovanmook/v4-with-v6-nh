@@ -20,7 +20,9 @@
  *   2. selecting an IPv6 default router from the kernel's default
  *      router list (sysctl net.inet6.icmp6.nd6_drlist, the same source
  *      ndp -r uses), honouring RFC 4191 Default Router Preference,
- *      with a deterministic lowest-address tie-breaker;
+ *      with a deterministic lowest-address tie-breaker; or, for
+ *      deployments without Router Advertisements, falling back to a
+ *      statically configured IPv6 default route (RTF_STATIC);
  *   3. installing "route add default -inet6 <router>" via a PF_ROUTE
  *      socket (RTM_ADD with an AF_INET destination and an AF_INET6
  *      gateway);
@@ -238,7 +240,7 @@ route_msg(u_char type, const struct in6_addr *gw)
 }
 
 static void
-install(const struct in6_addr *gw)
+install(const struct in6_addr *gw, const char *src)
 {
         char abuf[INET6_ADDRSTRLEN];
         int r;
@@ -258,7 +260,8 @@ install(const struct in6_addr *gw)
         }
 
         inet_ntop(AF_INET6, gw, abuf, sizeof(abuf));
-        syslog(LOG_NOTICE, "%s: IPv4 default -> via inet6 %s", ifname, abuf);
+        syslog(LOG_NOTICE, "%s: IPv4 default -> via inet6 %s (%s)",
+            ifname, abuf, src);
         route_installed = true;
         installed_gw = *gw;
 }
@@ -369,6 +372,86 @@ sentinel_in_fib(void)
         return found;
 }
 
+/*
+ * Fallback next-hop source for deployments that do not run Router
+ * Advertisements: a statically configured IPv6 default route.  The ND
+ * default router list (select_router(), RFC 4191) is the primary path
+ * and reflects real deployments; this is consulted only when that list
+ * is empty.  Scan the FIB for a default (::/0) route on our interface
+ * with an IPv6 gateway and return that gateway.  Restricted to RTF_STATIC
+ * so an RA-installed default is never mistaken for operator config.
+ */
+static bool
+static_default_router(struct in6_addr *gw)
+{
+        int mib[7] = { CTL_NET, PF_ROUTE, 0, AF_INET6, NET_RT_DUMP, 0, 0 };
+        char *buf = NULL, *p;
+        size_t len = 0;
+        bool found = false;
+
+        if (sysctl(mib, nitems(mib), NULL, &len, NULL, 0) < 0 || len == 0)
+                return false;
+        buf = malloc(len);
+        if (buf == NULL)
+                return false;
+        if (sysctl(mib, nitems(mib), buf, &len, NULL, 0) < 0) {
+                free(buf);
+                return false;
+        }
+
+        for (p = buf; p < buf + len;) {
+                struct rt_msghdr *rtm = (struct rt_msghdr *)(void *)p;
+                struct sockaddr *sa, *dst = NULL, *gwsa = NULL;
+                struct sockaddr_in6 *d6, *g6;
+                char *q;
+                int i;
+
+                p += rtm->rtm_msglen;
+                if (rtm->rtm_version != RTM_VERSION)
+                        continue;
+                if (rtm->rtm_index != ifindex)
+                        continue;
+                if ((rtm->rtm_flags & (RTF_GATEWAY | RTF_STATIC)) !=
+                    (RTF_GATEWAY | RTF_STATIC))
+                        continue;
+
+                q = (char *)(rtm + 1);
+                for (i = 1; i <= RTA_NETMASK; i <<= 1) {
+                        if ((rtm->rtm_addrs & i) == 0)
+                                continue;
+                        sa = (struct sockaddr *)(void *)q;
+                        if (i == RTA_DST)
+                                dst = sa;
+                        else if (i == RTA_GATEWAY)
+                                gwsa = sa;
+                        q += SA_SIZE(sa);
+                }
+
+                if (dst == NULL || gwsa == NULL)
+                        continue;
+                if (dst->sa_family != AF_INET6 || gwsa->sa_family != AF_INET6)
+                        continue;
+
+                d6 = (struct sockaddr_in6 *)(void *)dst;
+                if (!IN6_IS_ADDR_UNSPECIFIED(&d6->sin6_addr))
+                        continue;       /* not a default (::/0) route */
+
+                g6 = (struct sockaddr_in6 *)(void *)gwsa;
+                *gw = g6->sin6_addr;
+                /* KAME embeds the scope id in bytes 2-3 for link-local
+                 * gateways; strip it so fill_gateway() re-embeds cleanly. */
+                if (IN6_IS_ADDR_LINKLOCAL(gw)) {
+                        gw->s6_addr[2] = 0;
+                        gw->s6_addr[3] = 0;
+                }
+                found = true;
+                break;
+        }
+
+        free(buf);
+        return found;
+}
+
 static void
 reconcile(void)
 {
@@ -389,12 +472,16 @@ reconcile(void)
                 return;
         }
 
-        if (!select_router(&gw)) {
-                withdraw("no IPv6 default router on interface");
-                return;
+        /* Primary path: an RA-learned default router (RFC 4191).  If none
+         * is known -- a deployment without Router Advertisements -- fall
+         * back to a statically configured IPv6 default route. */
+        if (select_router(&gw)) {
+                install(&gw, "ND default router list");
+        } else if (static_default_router(&gw)) {
+                install(&gw, "static IPv6 default route");
+        } else {
+                withdraw("no IPv6 next hop (ND list empty, no static default)");
         }
-
-        install(&gw);
 }
 
 static bool
