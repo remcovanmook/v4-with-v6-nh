@@ -15,7 +15,9 @@ host/    v4gwd.py — Linux host daemon implementing draft Section 4
          programming via IPv6 next hop) + systemd unit;
          systemd-networkd/ — native networkd patch;
          freebsd/ — C daemon for FreeBSD 13.1+ (RFC 5549 data plane)
-         with dhclient-exit-hooks and rc.d integration
+         with dhclient-exit-hooks and rc.d integration;
+         macos/ — C daemon for macOS (no kernel v4-via-v6 needed:
+         maintains a static ARP entry that follows the IPv6 router)
 lab/     network-namespace lab reproducing the Section 5.1 topology,
          with conformance tests (incl. a zero-ARP assertion);
          freebsd/ — equivalent vnet-jail lab
@@ -81,7 +83,9 @@ implementation would close those gaps.
   systemd-networkd native patch (applies to systemd main, builds
   warning-free, `test-network` integration test 100/100); FreeBSD
   user-space daemon (vnet-jail lab, connectivity + zero-ARP on
-  FreeBSD 15.1).
+  FreeBSD 15.1); macOS daemon (no kernel v4-via-v6 support — follows the
+  IPv6 default router and maintains a static ARP entry for 192.0.0.11;
+  discovery path verified on macOS 26.5, mutation path pending a lab).
 - Router-side: configuration-only; example configs for IOS XR, JunOS,
   SR OS, EOS and RouterOS in [router/vendor-configs/](router/vendor-configs/)
   (RFC 8950 return-path, 192.0.0.11 termination and ARP tier, §5.2
