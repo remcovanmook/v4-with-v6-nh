@@ -27,8 +27,12 @@ ip link set "$IF" up
 ip -6 addr replace 2001:db8:1::a/64 dev "$IF"
 
 # The special-purpose gateway: interface-scoped (scope link, so it is
-# never a source toward off-link destinations and never redistributed),
-# and answers ARP for the unmodified-host / static-ARP tier.
+# never redistributed and never auto-selected as a source -- which is why
+# the lease hook pins it explicitly as the source on each host /32, so DHCP
+# replies come from the server-id and not the global-scoped 203.0.113.1).
+# It also answers ARP for 192.0.0.11 for genuinely unmodified hosts; hosts
+# running a daemon (including the macOS static-ARP realization) resolve it
+# from the IPv6 neighbor cache and never ARP for it.
 ip addr replace 192.0.0.11/32 scope link dev "$IF"
 
 # The host segment gets NO IPv4 address here -- only 192.0.0.11 above.
