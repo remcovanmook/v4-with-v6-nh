@@ -17,7 +17,7 @@
 set -eu
 
 JPFX=v4nh
-V4GWD="${V4GWD:-$(dirname "$0")/../../host/freebsd/v4gwd}"
+V4GWD="${V4GWD:-$(cd "$(dirname "$0")/../../host/freebsd" && pwd)/v4gwd}"
 STATE="/var/run/${JPFX}-lab.env"
 
 
@@ -66,22 +66,30 @@ EOF
     jexec ${JPFX}hostA ifconfig $HA_IF inet 198.51.100.1/32 up
     jexec ${JPFX}hostA ifconfig $HA_IF inet6 2001:db8:1::1/64
     jexec ${JPFX}r1    ifconfig $R1A_IF inet6 2001:db8:1::a/64
-    jexec ${JPFX}r1    ifconfig $R1B_IF inet6 auto_linklocal up
-    jexec ${JPFX}r2    ifconfig $R2B_IF inet6 auto_linklocal up
+    # The R1-R2 link is link-local only. A fresh interface comes up with
+    # the ND6 IFDISABLED flag set (no IPv6, no auto link-local); assigning
+    # a global address clears it implicitly, but a link-local-only
+    # interface must clear it explicitly with -ifdisabled, otherwise no
+    # fe80 address is generated and the RFC 5549 next hop can't resolve.
+    jexec ${JPFX}r1    ifconfig $R1B_IF inet6 -ifdisabled auto_linklocal up
+    jexec ${JPFX}r2    ifconfig $R2B_IF inet6 -ifdisabled auto_linklocal up
     jexec ${JPFX}r2    ifconfig $R2C_IF inet6 2001:db8:2::a/64
     jexec ${JPFX}hostB ifconfig $HB_IF inet 203.0.113.5/32 up
     jexec ${JPFX}hostB ifconfig $HB_IF inet6 2001:db8:2::2/64
     sleep 2  # DAD
 
-    R1_A=$(lladdr r1 $R1A_IF);  R1_B=$(lladdr r1 $R1B_IF)
-    R2_B=$(lladdr r2 $R2B_IF);  R2_C=$(lladdr r2 $R2C_IF)
+    R1_B=$(lladdr r1 $R1B_IF);  R2_B=$(lladdr r2 $R2B_IF)
     HA=$(lladdr hostA $HA_IF);  HB=$(lladdr hostB $HB_IF)
 
-    # Hosts: IPv6 default router (static stand-in for RA; v4gwd reads
-    # the kernel default router list -- to exercise the RA path proper,
-    # run rtadvd in r1/r2 instead and use "-r"/-f modes).
-    jexec ${JPFX}hostA route -6 add default "${R1_A}%${HA_IF}" > /dev/null
-    jexec ${JPFX}hostB route -6 add default "${R2_C}%${HB_IF}" > /dev/null
+    # Hosts learn their IPv6 default router from Router Advertisements
+    # (rtadvd, started below).  v4gwd selects its next hop from the ND6
+    # default router list, and *only* RAs populate that list -- a static
+    # default route never appears there, so RA acceptance is required for
+    # the daemon to have anything to select.
+    jexec ${JPFX}hostA sysctl -q net.inet6.ip6.accept_rtadv=1
+    jexec ${JPFX}hostA ifconfig $HA_IF inet6 accept_rtadv
+    jexec ${JPFX}hostB sysctl -q net.inet6.ip6.accept_rtadv=1
+    jexec ${JPFX}hostB ifconfig $HB_IF inet6 accept_rtadv
 
     # Routers: RFC 5549 /32 routes, IPv6 next hops, ND-resolved
     jexec ${JPFX}r1 route add -host 203.0.113.5  -inet6 "${R2_B}%${R1B_IF}" > /dev/null
@@ -91,11 +99,48 @@ EOF
     jexec ${JPFX}r1 route -6 add 2001:db8:2::/64 "${R2_B}%${R1B_IF}" > /dev/null
     jexec ${JPFX}r2 route -6 add 2001:db8:1::/64 "${R1_B}%${R2B_IF}" > /dev/null
 
-    # Host daemons (draft Section 4)
-    daemon -p /var/run/${JPFX}-hostA.pid \
+    # Routers advertise themselves as the IPv6 default router toward the
+    # hosts.  noifprefix keeps the RA to a link-local default only (no
+    # SLAAC prefix); short min/max intervals converge in seconds while a
+    # long router lifetime keeps the entry stable between RAs.
+    for pair in "r1 $R1A_IF" "r2 $R2C_IF"; do
+        set -- $pair
+        conf="/var/run/${JPFX}-ra-$2.conf"
+        printf '%s:\\\n\t:noifprefix:mininterval#3:maxinterval#4:rltime#1800:\n' \
+            "$2" > "$conf"
+        jexec ${JPFX}$1 rtadvd -c "$conf" -p "/var/run/${JPFX}-rtadvd-$2.pid" "$2"
+    done
+
+    # Host daemons (draft Section 4). -f redirects the daemon's stdio to
+    # /dev/null (v4gwd logs to syslog); without it the daemon inherits
+    # our stdout and a piped/non-interactive "up" hangs waiting on EOF.
+    # Start them *before* soliciting the RA, so they are already watching
+    # the routing socket when the RA installs the IPv6 default and can
+    # reconcile immediately rather than on their periodic (15 s) timer.
+    daemon -f -p /var/run/${JPFX}-hostA.pid \
         jexec ${JPFX}hostA "${V4GWD}" $HA_IF
-    daemon -p /var/run/${JPFX}-hostB.pid \
+    daemon -f -p /var/run/${JPFX}-hostB.pid \
         jexec ${JPFX}hostB "${V4GWD}" $HB_IF
+
+    # Prompt an immediate RA so the hosts converge now rather than on
+    # rtadvd's next cycle -- the kernel's own RS burst fired at interface
+    # bring-up, before rtadvd existed. rtsol -1 exits as soon as a valid
+    # RA arrives; the timeout is only a safety net (rtadvd's periodic RAs
+    # would converge the hosts regardless).
+    timeout 8 jexec ${JPFX}hostA rtsol -1 $HA_IF || true
+    timeout 8 jexec ${JPFX}hostB rtsol -1 $HB_IF || true
+
+    # Block until both daemons have installed the IPv4 default route
+    # (RA convergence + reconcile) instead of guessing a fixed delay.
+    n=0
+    while [ $n -lt 40 ]; do
+        if jexec ${JPFX}hostA netstat -rn -f inet 2>/dev/null | grep -q '^default' &&
+           jexec ${JPFX}hostB netstat -rn -f inet 2>/dev/null | grep -q '^default'; then
+            break
+        fi
+        n=$((n + 1))
+        sleep 0.5
+    done
 
     echo "Lab up. Try: jexec ${JPFX}hostA ping -c3 203.0.113.5"
 }
@@ -143,6 +188,9 @@ down() {
     for j in hostA r1 r2 hostB; do
         jail -r ${JPFX}$j 2>/dev/null || true
     done
+    # rtadvd runs inside the router jails and dies with them; clean up the
+    # pidfiles and generated configs it leaves on the shared filesystem.
+    rm -f /var/run/${JPFX}-ra-*.conf /var/run/${JPFX}-rtadvd-*.pid
     # epairs return to the host vnet when their jail is removed; destroy
     # any that survived (destroying either half removes the pair).
     if [ -f "$STATE" ]; then
