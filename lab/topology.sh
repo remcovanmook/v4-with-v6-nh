@@ -23,7 +23,7 @@ set -euo pipefail
 
 NS=(v4nh-hostA v4nh-r1 v4nh-r2 v4nh-hostB)
 V4GWD="$(cd "$(dirname "${BASH_SOURCE[0]}")/../host" && pwd)/v4gwd.py"
-RUNDIR=/tmp/v4nh-lab
+RUNDIR="${TMPDIR:-/tmp}/v4nh-lab"
 SENTINEL_MODE=0
 
 lladdr() {  # lladdr <ns> <iface>  -> link-local address of iface in ns
