@@ -31,6 +31,16 @@ daemon:
    host would otherwise resolve 192.0.0.11 by ordinary ARP), and removes
    it when no usable router remains.
 
+On an interface bring-up there is a brief window where the host configures
+IPv4 and resolves its gateway before ND has re-learned the router. To win
+that race the daemon remembers each resolved router MAC keyed to the
+interface's own MAC — a per-network fingerprint, since macOS rotates its
+own MAC per network — persisted at `/var/db/v4gwd-arp/router-macs`, and
+re-asserts the static entry from that map the instant the address comes up,
+before falling back to ordinary ARP. The persistence covers a daemon
+restart or reboot; the own-MAC key keeps it from re-asserting a stale MAC
+after moving networks.
+
 No ARP is ever emitted for 192.0.0.11 (the static entry pre-empts it) and
 the link-layer address comes from the ND cache, so the draft's Section 4
 "no ARP, resolve from the neighbor cache" behaviour is met — this is just

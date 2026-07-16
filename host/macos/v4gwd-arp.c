@@ -42,6 +42,7 @@
 
 #include <sys/param.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <sys/wait.h>
 
@@ -51,6 +52,7 @@
 
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <ifaddrs.h>
 
 #include <err.h>
 #include <errno.h>
@@ -86,6 +88,34 @@ static int rtsock = -1;
 
 static bool arp_installed = false;
 static uint8_t installed_mac[6];
+
+/*
+ * Persistent map of resolved router MAC keyed to the interface's own MAC at
+ * the time it was learned.  macOS assigns a different link-layer address per
+ * network (private/randomised MACs), so the own-MAC is a per-network key: a
+ * hit means we are on a network we have seen and the stored router MAC is safe
+ * to re-assert during a bring-up, before Neighbor Discovery has re-resolved it
+ * (this also survives a daemon restart / reboot).  A miss means a new or moved
+ * network -- cede to the host's normal ARP bootstrap rather than steer traffic
+ * at a stale MAC.
+ *
+ * The key is a heuristic, not a guarantee: if the own-MAC does not rotate and
+ * the host moves to a different network, it still hits and we re-assert a stale
+ * 192.0.0.11 MAC.  That is harmless -- 192.0.0.11 is the gateway only on a
+ * sentinel segment, so on an ordinary network nothing routes through it and the
+ * entry is never consulted.  Only landing on another sentinel segment (with a
+ * different router) has any effect, and reconcile corrects the MAC in a cycle.
+ */
+#define ROUTER_CACHE_MAX   16
+#define ROUTER_CACHE_DIR   "/var/db/v4gwd-arp"
+#define ROUTER_CACHE_FILE  ROUTER_CACHE_DIR "/router-macs"
+
+struct mac_map {
+        uint8_t host[6];
+        uint8_t router[6];
+};
+static struct mac_map router_cache[ROUTER_CACHE_MAX];
+static size_t router_cache_n = 0;
 
 static void
 handle_sig(int sig)
@@ -457,11 +487,117 @@ sentinel_in_fib(void)
         return found;
 }
 
+/* Router MAC stored for this interface own-MAC, or NULL. */
+static const uint8_t *
+router_cache_lookup(const uint8_t host[6])
+{
+        for (size_t i = 0; i < router_cache_n; i++)
+                if (memcmp(router_cache[i].host, host, 6) == 0)
+                        return router_cache[i].router;
+        return NULL;
+}
+
+/* Insert or update the mapping; returns true if it changed. */
+static bool
+router_cache_put(const uint8_t host[6], const uint8_t router[6])
+{
+        for (size_t i = 0; i < router_cache_n; i++)
+                if (memcmp(router_cache[i].host, host, 6) == 0) {
+                        if (memcmp(router_cache[i].router, router, 6) == 0)
+                                return false;
+                        memcpy(router_cache[i].router, router, 6);
+                        return true;
+                }
+        if (router_cache_n >= ROUTER_CACHE_MAX) {
+                memmove(&router_cache[0], &router_cache[1],
+                    (ROUTER_CACHE_MAX - 1) * sizeof(router_cache[0]));
+                router_cache_n = ROUTER_CACHE_MAX - 1;
+        }
+        memcpy(router_cache[router_cache_n].host, host, 6);
+        memcpy(router_cache[router_cache_n].router, router, 6);
+        router_cache_n++;
+        return true;
+}
+
+static void
+router_cache_load(void)
+{
+        FILE *fp = fopen(ROUTER_CACHE_FILE, "r");
+        char line[64];
+
+        if (fp == NULL)
+                return;
+        while (router_cache_n < ROUTER_CACHE_MAX &&
+            fgets(line, sizeof(line), fp) != NULL) {
+                struct mac_map *m = &router_cache[router_cache_n];
+
+                if (sscanf(line,
+                    "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx"
+                    " %hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+                    &m->host[0], &m->host[1], &m->host[2],
+                    &m->host[3], &m->host[4], &m->host[5],
+                    &m->router[0], &m->router[1], &m->router[2],
+                    &m->router[3], &m->router[4], &m->router[5]) == 12)
+                        router_cache_n++;
+        }
+        fclose(fp);
+}
+
+static void
+router_cache_save(void)
+{
+        FILE *fp;
+
+        (void) mkdir(ROUTER_CACHE_DIR, 0755);
+        if ((fp = fopen(ROUTER_CACHE_FILE ".tmp", "w")) == NULL)
+                return;
+        for (size_t i = 0; i < router_cache_n; i++) {
+                char h[18], r[18];
+
+                mac_str(router_cache[i].host, h);
+                mac_str(router_cache[i].router, r);
+                fprintf(fp, "%s %s\n", h, r);
+        }
+        fclose(fp);
+        (void) rename(ROUTER_CACHE_FILE ".tmp", ROUTER_CACHE_FILE);
+}
+
+/*
+ * The interface's own link-layer (MAC) address -- used as a per-network key
+ * (see the cache note above).
+ */
+static bool
+iface_lladdr(const char *ifn, uint8_t mac[6])
+{
+        struct ifaddrs *ifap, *ifa;
+        bool found = false;
+
+        if (getifaddrs(&ifap) != 0)
+                return false;
+        for (ifa = ifap; ifa != NULL; ifa = ifa->ifa_next) {
+                struct sockaddr_dl *sdl;
+
+                if (ifa->ifa_addr == NULL ||
+                    ifa->ifa_addr->sa_family != AF_LINK ||
+                    strcmp(ifa->ifa_name, ifn) != 0)
+                        continue;
+                sdl = (struct sockaddr_dl *)(void *)ifa->ifa_addr;
+                if (sdl->sdl_alen == 6) {
+                        memcpy(mac, LLADDR(sdl), 6);
+                        found = true;
+                        break;
+                }
+        }
+        freeifaddrs(ifap);
+        return found;
+}
+
 static void
 reconcile(void)
 {
         struct in6_addr gw;
-        uint8_t mac[6];
+        uint8_t mac[6], host_mac[6];
+        bool have_host_mac;
 
         ifindex = if_nametoindex(ifname);
         if (ifindex == 0) {
@@ -478,15 +614,34 @@ reconcile(void)
                 return;
         }
 
-        if (!find_default_router(&gw)) {
-                withdraw("no IPv6 default router on interface");
+        have_host_mac = iface_lladdr(ifname, host_mac);
+
+        if (find_default_router(&gw) && router_lladdr(&gw, mac)) {
+                /* Router resolved via ND: install it, and record it keyed to
+                 * the interface's own MAC (persisted for the next bring-up). */
+                install(mac);
+                if (have_host_mac && router_cache_put(host_mac, mac))
+                        router_cache_save();
                 return;
         }
-        if (!router_lladdr(&gw, mac)) {
-                withdraw("IPv6 default router link-layer address unresolved");
+
+        /*
+         * The router MAC is not resolvable yet -- the startup/transition
+         * window before an RA has repopulated the ND cache.  If we have a
+         * stored router MAC for this interface own-MAC, we are on a network we
+         * have seen: re-assert it now, ahead of the host resolving the gateway
+         * by ARP (the DAD on the host's own address buys us ~a second).  A miss
+         * (new or moved network) means the stored mappings do not apply -- cede
+         * to the host's normal ARP bootstrap rather than steer traffic at a
+         * stale MAC.
+         */
+        const uint8_t *cached = have_host_mac ?
+            router_cache_lookup(host_mac) : NULL;
+        if (cached != NULL) {
+                install(cached);
                 return;
         }
-        install(mac);
+        withdraw("no IPv6 default router resolved yet; ceding to ARP bootstrap");
 }
 
 /* -n: discovery only.  Report what would be programmed and exit. */
@@ -588,6 +743,7 @@ main(int argc, char **argv)
         signal(SIGINT, handle_sig);
         signal(SIGTERM, handle_sig);
 
+        router_cache_load();    /* warm the map so the first bring-up is fast */
         reconcile();
 
         pfd.fd = rtsock;
