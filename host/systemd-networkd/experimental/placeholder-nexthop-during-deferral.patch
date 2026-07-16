@@ -1,0 +1,39 @@
+Subject: [PATCH] network: placeholder next hop during startup deferral (OPTIONAL)
+
+Optional companion to
+0001-network-support-IPv6-resolved-IPv4-gateway-192.0.0.1.patch -- apply on
+top of it (patch -p1, or git apply). NOT part of the canonical patch; see
+README.md in this directory for the rationale and status.
+
+When the DHCPv4 lease names the sentinel 192.0.0.11 but no IPv6 default
+router is known yet, the canonical patch defers the IPv4 default until the
+first RA. During that startup window an interface-pinned IPv4 send (e.g. a
+resolver querying a DHCP-supplied DNS server) has no default route and the
+kernel falls back to an on-link ARP for the destination. This installs the
+default via a bogus, never-assigned link-local next hop for the duration of
+the window instead, so such sends resolve an IPv6 next hop via ND (dropped)
+rather than ARPing on-link. The existing stale-route sweep replaces it with
+the real router on the first RA.
+
+--- a/src/network/networkd-dhcp4.c
++++ b/src/network/networkd-dhcp4.c
+@@ -716,10 +716,15 @@
+                  * dhcp4_ipv6_resolved_gateway_update() and we get here
+                  * again. */
+                 log_link_debug(link, "DHCP: router is the IPv6-resolved gateway (192.0.0.11), "
+-                               "but no IPv6 default router is known yet, deferring.");
+-                return 0;
+-        }
+-        if (r < 0)
++                               "but no IPv6 default router is known yet, installing "
++                               "placeholder next hop.");
++                /* Bogus, never-assigned link-local next hop (fe80::c000:c,
++                 * i.e. 192.0.0.12 -- one past the sentinel). Interface-pinned
++                 * IPv4 sends during this startup window resolve it via ND and
++                 * drop, instead of ARPing the destination on-link. Replaced by
++                 * the real router on the first RA (the stale sweep below). */
++                gw = (struct in6_addr) { .s6_addr = { 0xfe,0x80,0,0,0,0,0,0,0,0,0,0,0xc0,0x00,0x00,0x0c } };
++        } else if (r < 0)
+                 return r;
+
+         r = sd_dhcp_lease_get_address(link->dhcp_lease, &address);
