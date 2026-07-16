@@ -48,6 +48,13 @@ A vnet-jail lab equivalent to the Linux netns lab is in
 `../../lab/freebsd/freebsd-lab.sh` (up | test | down), including the
 zero-ARP assertion.
 
+DNS note: the testbed serves DNS over IPv6 (RA RDNSS), not IPv4 DHCP
+option 6, so the resolver is never queried over the v4-via-v6 path. Unlike
+Linux/macOS, FreeBSD does not process RDNSS into `resolv.conf` on its own —
+enable `rtsold` (`sysrc rtsold_enable=YES`), which feeds RDNSS to
+`resolvconf`, and stop `dhclient` from re-adding an IPv4 nameserver with an
+`/etc/dhclient-enter-hooks` stub (`add_new_resolv_conf() { return 0; }`).
+
 Status: validated on FreeBSD 15.1-RELEASE. The vnet-jail lab passes
 end-to-end IPv4 connectivity and the zero-ARP assertion; both next-hop
 sources — the RA-learned default router list and the static IPv6
