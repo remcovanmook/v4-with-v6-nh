@@ -17,16 +17,21 @@ host/    v4gwd.py — Linux host daemon implementing draft Section 4
          freebsd/ — C daemon for FreeBSD 13.1+ (RFC 5549 data plane)
          with dhclient-exit-hooks and rc.d integration;
          macos/ — C daemon for macOS (no kernel v4-via-v6 needed:
-         maintains a static ARP entry that follows the IPv6 router)
+         maintains a static ARP entry that follows the IPv6 router);
+         windows/ — PowerShell daemon + native C service, the same
+         static-neighbor realization via the IP Helper API
 lab/     network-namespace lab reproducing the Section 5.1 topology,
          with conformance tests (incl. a zero-ARP assertion);
          freebsd/ — equivalent vnet-jail lab
-router/  vendor configuration examples for the Section 5 router side
-         (RFC 8950 return-path routes, 192.0.0.11 termination, the
-         unmodified-host ARP tier, and §5.2 forwarding enforcement)
-         across five commercial platforms
-docs/    conformance matrix: every normative statement in Sections 4–5
-         mapped to code, kernel behaviour, or a documented gap
+router/  debian/ — the working testbed router (RA + DHCPv4, RFC 5549
+         return path, native reboot-persistent config);
+         vendor-configs/ — configuration examples for the Section 5
+         router side (RFC 8950 return-path, 192.0.0.11 termination, the
+         unmodified-host ARP tier, §5.2 enforcement) across five
+         commercial platforms
+docs/    conformance.md — every normative statement in Sections 4–5
+         mapped to code, kernel behaviour, or a documented gap;
+         draft-notes.md — proposed additions for the I-D
 legacy/  the original 2024/25 mechanism this work grew out of
          (IPv4 default route follows the IPv6 default gateway) —
          retained as prior art; not draft-conformant
@@ -69,6 +74,12 @@ installs `default via inet6 <router>`, tracks router-list and neighbor
 cache changes over netlink, and withdraws its route when the sentinel
 disappears (DHCPv4 lease expiry) or no usable router remains.
 
+FreeBSD carries the same RFC 5549 data plane in kernel. Stacks with no
+kernel v4-via-v6 support — macOS and Windows — reach the identical on-wire
+behaviour with a static-neighbor realization: a daemon pins 192.0.0.11 to
+the IPv6 default router's link-layer address (read from the neighbor cache,
+never ARP) and re-slaves it as that router changes.
+
 A user-space daemon cannot queue individual packets pending first RA
 reception; this and other approximations are documented precisely in
 [docs/conformance.md](docs/conformance.md). A native in-kernel
@@ -85,7 +96,15 @@ implementation would close those gaps.
   user-space daemon (vnet-jail lab, connectivity + zero-ARP on
   FreeBSD 15.1); macOS daemon (no kernel v4-via-v6 support — follows the
   IPv6 default router and maintains a static ARP entry for 192.0.0.11;
-  discovery path verified on macOS 26.5, mutation path pending a lab).
+  validated end to end on macOS 26, zero-ARP + connectivity); and a
+  Windows daemon (PowerShell `v4gwd.ps1` + native C service via the IP
+  Helper API, the same static-neighbor realization — validated end to end
+  on Windows 11 ARM64: stock-unmodified hosts work per §5.3, and the
+  daemon pins 192.0.0.11 to the ND-resolved router, follows a live
+  gateway change, and runs at boot).
+- Prebuilt host binaries and patched systemd-networkd packages
+  (macOS / FreeBSD / Fedora / Ubuntu; arm64 + amd64) are published as
+  release assets under the `prebuilt` tag — see each `host/*/prebuilt/`.
 - Router-side: configuration-only; example configs for IOS XR, JunOS,
   SR OS, EOS and RouterOS in [router/vendor-configs/](router/vendor-configs/)
   (RFC 8950 return-path, 192.0.0.11 termination and ARP tier, §5.2
