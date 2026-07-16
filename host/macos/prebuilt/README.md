@@ -6,7 +6,7 @@ this just saves that step, and the C source is authoritative.
 
 Download — **arm64**, macOS 26 / Darwin (on Intel, run `make`):
 
-    curl -LO https://github.com/remcovanmook/v4-with-v6-nh/releases/download/prebuilt-arm64/v4gwd-arp-macos-arm64
+    curl -LO https://github.com/remcovanmook/v4-with-v6-nh/releases/download/prebuilt/v4gwd-arp-macos-arm64
     sudo install -m 755 v4gwd-arp-macos-arm64 /usr/local/sbin/v4gwd-arp
 
 The binary is unsigned — run it via `sudo`; it needs no entitlements.
