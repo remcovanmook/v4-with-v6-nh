@@ -248,7 +248,7 @@ function Invoke-Reconcile {
 # -DryRun: report what would be programmed and exit.
 function Invoke-DryRun {
     $ifx = Get-ManagedIfIndex
-    if (-not $ifx) { Write-Host "v4gwd: $Interface: no such interface"; return 1 }
+    if (-not $ifx) { Write-Host "v4gwd: ${Interface}: no such interface"; return 1 }
     Write-Host "v4gwd dry run on $Interface (ifIndex $ifx)"
     if ($RequireSentinelRoute) {
         $ok = Test-SentinelRoute -IfIndex $ifx
