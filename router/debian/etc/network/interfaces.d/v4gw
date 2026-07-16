@@ -1,0 +1,15 @@
+# v4-with-v6-nh testbed: host-facing IPv6-only segment (enp0s2 here -- EDIT
+# to match). Sourced from /etc/network/interfaces.
+#
+# The segment carries NO IPv4 subnet: only the special-purpose gateway
+# 192.0.0.11/32 (interface-scoped, so it is never redistributed or
+# auto-selected as a source) plus the router's IPv6 GUA. 203.0.113.1/32 on
+# lo is a target behind the router for the hosts to ping.
+auto enp0s2
+iface enp0s2 inet6 static
+    address 2001:db8:1::a
+    netmask 64
+    up   ip addr replace 192.0.0.11/32 scope link dev enp0s2
+    up   ip addr replace 203.0.113.1/32 dev lo
+    down ip addr del 203.0.113.1/32 dev lo 2>/dev/null || true
+    down ip addr del 192.0.0.11/32 dev enp0s2 2>/dev/null || true

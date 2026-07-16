@@ -1,7 +1,7 @@
 [Unit]
 Description=v4-with-v6-nh testbed router dnsmasq (RA + DHCPv4 + return routes)
-After=v4gw-router.service
-Requires=v4gw-router.service
+After=networking.service
+Wants=networking.service
 [Service]
 Type=simple
 ExecStart=/usr/sbin/dnsmasq --conf-file=/etc/v4gw/dnsmasq.conf --no-daemon
