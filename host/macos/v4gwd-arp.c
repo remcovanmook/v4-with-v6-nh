@@ -105,17 +105,13 @@ static uint8_t installed_mac[6];
  * sentinel segment, so on an ordinary network nothing routes through it and the
  * entry is never consulted.  Only landing on another sentinel segment (with a
  * different router) has any effect, and reconcile corrects the MAC in a cycle.
+ *
+ * On disk it is a directory with one file per network: the filename is the
+ * interface own-MAC and the contents are the router MAC.  The filesystem is the
+ * map -- lookup reads one file, store writes one -- so there is no in-memory
+ * table, and an operator can list, read, or remove mappings with ls/cat/rm.
  */
-#define ROUTER_CACHE_MAX   16
 #define ROUTER_CACHE_DIR   "/var/db/v4gwd-arp"
-#define ROUTER_CACHE_FILE  ROUTER_CACHE_DIR "/router-macs"
-
-struct mac_map {
-        uint8_t host[6];
-        uint8_t router[6];
-};
-static struct mac_map router_cache[ROUTER_CACHE_MAX];
-static size_t router_cache_n = 0;
 
 static void
 handle_sig(int sig)
@@ -487,79 +483,56 @@ sentinel_in_fib(void)
         return found;
 }
 
-/* Router MAC stored for this interface own-MAC, or NULL. */
-static const uint8_t *
-router_cache_lookup(const uint8_t host[6])
+/* Path of the per-network entry file (named by the interface own-MAC). */
+static void
+router_cache_path(const uint8_t host[6], char *out, size_t outlen)
 {
-        for (size_t i = 0; i < router_cache_n; i++)
-                if (memcmp(router_cache[i].host, host, 6) == 0)
-                        return router_cache[i].router;
-        return NULL;
+        char h[18];
+
+        mac_str(host, h);
+        snprintf(out, outlen, ROUTER_CACHE_DIR "/%s", h);
 }
 
-/* Insert or update the mapping; returns true if it changed. */
+/* Fill `router` from the stored entry for this own-MAC; false if none. */
 static bool
+router_cache_lookup(const uint8_t host[6], uint8_t router[6])
+{
+        char path[64], line[32];
+        FILE *fp;
+        bool ok = false;
+
+        router_cache_path(host, path, sizeof(path));
+        if ((fp = fopen(path, "r")) == NULL)
+                return false;
+        if (fgets(line, sizeof(line), fp) != NULL &&
+            sscanf(line, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+                &router[0], &router[1], &router[2],
+                &router[3], &router[4], &router[5]) == 6)
+                ok = true;
+        fclose(fp);
+        return ok;
+}
+
+/* Store the own-MAC -> router-MAC mapping (idempotent, atomic). */
+static void
 router_cache_put(const uint8_t host[6], const uint8_t router[6])
 {
-        for (size_t i = 0; i < router_cache_n; i++)
-                if (memcmp(router_cache[i].host, host, 6) == 0) {
-                        if (memcmp(router_cache[i].router, router, 6) == 0)
-                                return false;
-                        memcpy(router_cache[i].router, router, 6);
-                        return true;
-                }
-        if (router_cache_n >= ROUTER_CACHE_MAX) {
-                memmove(&router_cache[0], &router_cache[1],
-                    (ROUTER_CACHE_MAX - 1) * sizeof(router_cache[0]));
-                router_cache_n = ROUTER_CACHE_MAX - 1;
-        }
-        memcpy(router_cache[router_cache_n].host, host, 6);
-        memcpy(router_cache[router_cache_n].router, router, 6);
-        router_cache_n++;
-        return true;
-}
-
-static void
-router_cache_load(void)
-{
-        FILE *fp = fopen(ROUTER_CACHE_FILE, "r");
-        char line[64];
-
-        if (fp == NULL)
-                return;
-        while (router_cache_n < ROUTER_CACHE_MAX &&
-            fgets(line, sizeof(line), fp) != NULL) {
-                struct mac_map *m = &router_cache[router_cache_n];
-
-                if (sscanf(line,
-                    "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx"
-                    " %hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
-                    &m->host[0], &m->host[1], &m->host[2],
-                    &m->host[3], &m->host[4], &m->host[5],
-                    &m->router[0], &m->router[1], &m->router[2],
-                    &m->router[3], &m->router[4], &m->router[5]) == 12)
-                        router_cache_n++;
-        }
-        fclose(fp);
-}
-
-static void
-router_cache_save(void)
-{
+        char path[64], tmp[72], r[18];
+        uint8_t cur[6];
         FILE *fp;
 
-        (void) mkdir(ROUTER_CACHE_DIR, 0755);
-        if ((fp = fopen(ROUTER_CACHE_FILE ".tmp", "w")) == NULL)
-                return;
-        for (size_t i = 0; i < router_cache_n; i++) {
-                char h[18], r[18];
+        if (router_cache_lookup(host, cur) && memcmp(cur, router, 6) == 0)
+                return;                         /* unchanged */
 
-                mac_str(router_cache[i].host, h);
-                mac_str(router_cache[i].router, r);
-                fprintf(fp, "%s %s\n", h, r);
-        }
+        (void) mkdir(ROUTER_CACHE_DIR, 0755);
+        router_cache_path(host, path, sizeof(path));
+        snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+        if ((fp = fopen(tmp, "w")) == NULL)
+                return;
+        mac_str(router, r);
+        fprintf(fp, "%s\n", r);
         fclose(fp);
-        (void) rename(ROUTER_CACHE_FILE ".tmp", ROUTER_CACHE_FILE);
+        (void) rename(tmp, path);
 }
 
 /*
@@ -620,8 +593,8 @@ reconcile(void)
                 /* Router resolved via ND: install it, and record it keyed to
                  * the interface's own MAC (persisted for the next bring-up). */
                 install(mac);
-                if (have_host_mac && router_cache_put(host_mac, mac))
-                        router_cache_save();
+                if (have_host_mac)
+                        router_cache_put(host_mac, mac);
                 return;
         }
 
@@ -635,9 +608,8 @@ reconcile(void)
          * to the host's normal ARP bootstrap rather than steer traffic at a
          * stale MAC.
          */
-        const uint8_t *cached = have_host_mac ?
-            router_cache_lookup(host_mac) : NULL;
-        if (cached != NULL) {
+        uint8_t cached[6];
+        if (have_host_mac && router_cache_lookup(host_mac, cached)) {
                 install(cached);
                 return;
         }
@@ -743,7 +715,6 @@ main(int argc, char **argv)
         signal(SIGINT, handle_sig);
         signal(SIGTERM, handle_sig);
 
-        router_cache_load();    /* warm the map so the first bring-up is fast */
         reconcile();
 
         pfd.fd = rtsock;
