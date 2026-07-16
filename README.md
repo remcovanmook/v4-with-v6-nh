@@ -76,7 +76,7 @@ implementation would close those gaps.
 
 ## Status
 
-- Draft: -00 submitted; IntArea presentation scheduled for IETF 126
+- Draft: -01 submitted; IntArea presentation scheduled for IETF 126
   (Vienna, July 2026).
 - Host implementations, all verified on real systems: Linux user-space
   daemon (netns lab, 6/6 conformance tests on Fedora 44 / kernel 6.19);
