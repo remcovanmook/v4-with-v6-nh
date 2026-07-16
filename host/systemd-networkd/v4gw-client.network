@@ -1,0 +1,15 @@
+# Native IPv6-resolved IPv4 gateway client (patched systemd-networkd).
+# Drop in /etc/systemd/network/ and adjust the interface name.
+#
+# The DHCP server must advertise 192.0.0.11 as the Router (option 3) and
+# must NOT send an RFC 3442 classless static route (option 121) for the
+# default -- see the README.
+[Match]
+Name=enp0s1
+
+[Network]
+DHCP=ipv4
+IPv6AcceptRA=yes
+
+[DHCPv4]
+UseIPv6ResolvedGateway=yes
