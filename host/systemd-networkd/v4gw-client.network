@@ -13,3 +13,9 @@ IPv6AcceptRA=yes
 
 [DHCPv4]
 UseIPv6ResolvedGateway=yes
+# Do not add host routes to the DHCP-advertised DNS/NTP servers: networkd
+# would install them via the IPv4 gateway (192.0.0.11), which is exactly
+# the ARP-resolved next hop we are avoiding. Those servers are reached over
+# the IPv6-resolved default route instead.
+RoutesToDNS=no
+RoutesToNTP=no

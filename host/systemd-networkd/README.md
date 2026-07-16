@@ -52,6 +52,15 @@ interface) and let networkd manage the link. The only requirements are
 `UseIPv6ResolvedGateway=yes` and a DHCP server whose Router option (3) is
 192.0.0.11.
 
+Also set `RoutesToDNS=no` and `RoutesToNTP=no`. `UseIPv6ResolvedGateway=`
+only rewrites the *default* route's next hop; with the DNS/NTP route
+options at their defaults, networkd additionally installs host routes to
+the advertised DNS and NTP servers *via the IPv4 gateway* (192.0.0.11),
+which re-introduces the ARP-resolved next hop (and the on-link /32 route to
+the gateway that backs it). Turning both off leaves a single IPv4 route —
+`default via inet6 …` — and the servers are reached over it; no ARP for the
+gateway is ever performed.
+
 The DHCP server must **not** also send an RFC 3442 classless static route
 (option 121) for the default. Per RFC 3442 that route takes precedence
 over the Router option, so networkd would follow the ARP-resolved
