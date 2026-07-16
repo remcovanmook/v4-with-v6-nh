@@ -42,6 +42,22 @@ interface own-MAC, contents = the router MAC), so it survives a daemon
 restart or reboot and can be inspected or pruned with `ls`/`cat`/`rm`; the
 own-MAC key keeps it from re-asserting a stale MAC after moving networks.
 
+Boot itself is the one case the daemon cannot cover, and this is a macOS
+limitation rather than a fixable gap: macOS resolves the gateway by ARP
+before any third-party daemon can run. The pre-boot (FileVault/EFI unlock)
+environment does its own network discovery entirely outside macOS proper,
+and even in macOS proper `configd` brings the interface up within a few
+seconds while launchd does not start this daemon until ~15–20 s in — so
+there is no ordering in which we are alive first, and one cannot `arp -s`
+before the interface exists. A reboot therefore emits a few transient
+gateway ARPs, which the RFC 5549 router answers (the draft's Section 5.3
+unmodified-host path). The daemon does win every *runtime* event — an
+interface flap, sleep/wake, a DHCP renewal — since it is already running
+and re-asserts from the map before the host re-resolves the gateway. (The
+daemon no longer exits when the interface is briefly absent, so it comes up
+in a single launchd start rather than throttle-looping, but even the
+earliest possible start is after `configd`.)
+
 No ARP is ever emitted for 192.0.0.11 (the static entry pre-empts it) and
 the link-layer address comes from the ND cache, so the draft's Section 4
 "no ARP, resolve from the neighbor cache" behaviour is met — this is just

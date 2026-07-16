@@ -702,11 +702,20 @@ main(int argc, char **argv)
         if (dry_run)
                 return dry_run_report();
 
+        openlog("v4gwd-arp", LOG_PID | LOG_PERROR, LOG_DAEMON);
+
+        /*
+         * Do not require the interface to exist yet.  At boot the daemon can be
+         * started before the NIC is up; exiting here would make launchd
+         * throttle-restart us until it appears -- tens of seconds later, well
+         * after the network has been brought up and the gateway ARP-resolved.
+         * Staying alive and watching the routing socket lets us re-assert the
+         * gateway the instant the interface is configured.  reconcile() handles
+         * a not-yet-present interface, and the poll loop wakes on its arrival.
+         */
         ifindex = if_nametoindex(ifname);
         if (ifindex == 0)
-                err(1, "%s", ifname);
-
-        openlog("v4gwd-arp", LOG_PID | LOG_PERROR, LOG_DAEMON);
+                syslog(LOG_NOTICE, "%s: not present yet, waiting", ifname);
 
         rtsock = socket(PF_ROUTE, SOCK_RAW, AF_UNSPEC);
         if (rtsock < 0)
