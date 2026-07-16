@@ -139,7 +139,22 @@ functionally equivalent.
 
 ## Status
 
-`v4gwd.ps1`: design complete; pending end-to-end validation on Windows 11
-(ARM64) against the live Debian RFC 5549 router (`../../router/debian/`). Stock
-unmodified Windows 11 (ARM64) is confirmed working on the sentinel segment
-(Section 5.3).
+Validated end-to-end on Windows 11 (ARM64) against the live Debian RFC 5549
+router (`../../router/debian/`):
+
+- stock **unmodified** Windows works on the sentinel segment (Section 5.3) —
+  off-subnet `/32` gateway accepted, DNS via RA RDNSS, no 121/249;
+- with the daemon, `192.0.0.11` is pinned to the ND-resolved IPv6 default
+  router's MAC (permanent, **zero ARP**), cached per-network under HKLM,
+  re-asserted the instant an external `arp -d` flushes it (pre-empting the ARP
+  fallback — the entry goes straight back to `Permanent`), and **re-slaved to a
+  new router** when the IPv6 default router changes;
+- runs at boot via the SYSTEM scheduled task, pinning within ~3 s and
+  withdrawing cleanly on shutdown.
+
+Note: failover is only as fast as the host's own IPv6 default-router selection.
+The daemon chases the `::/0` next hop promptly, but Windows clings to a departed
+router until a Router-Lifetime-0 "goodbye" RA — a silent `ifdown` on the old
+router is ignored until its lifetime expires (or the route is removed by hand).
+That stickiness is Windows ND behaviour, inherited by any v4-via-v6 gateway,
+not a property of the daemon.
