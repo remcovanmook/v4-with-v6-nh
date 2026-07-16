@@ -83,9 +83,32 @@ Fedora:
     rpmbuild -bb --nocheck ~/rpmbuild/SPECS/systemd.spec
     sudo rpm -Uvh --force ~/rpmbuild/RPMS/*/systemd-networkd-*.rpm
 
-Validated end to end on Fedora 44 (systemd 259.7, kernel 6.19): the
-rebuilt `systemd-networkd` takes a real interface over from NetworkManager
-and installs `default via inet6 fe80:… proto dhcp` — an IPv4 default with
-an IPv6 next hop, no ARP for the gateway — reaching the IPv4 internet from
-an IPv6-only segment, under SELinux **enforcing** (zero AVC denials) and
-persisting across the packaged unit + config.
+On Debian/Ubuntu the equivalent is `apt-get source` + quilt. Debian's
+`dpkg-source` applies patches at fuzz 0, so let quilt regenerate the patch
+against the exact source tree first (`networkd` lives in the `systemd`
+binary package here, not a split one):
+
+    sudo sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
+    sudo apt-get update && sudo apt-get build-dep -y systemd && sudo apt-get install -y quilt
+    apt-get source systemd && cd systemd-*/
+    export QUILT_PATCHES=debian/patches
+    quilt push -a
+    quilt new v4gw.patch
+    quilt add man/systemd.network.xml src/network/networkd-{dhcp4.c,dhcp4.h,ndisc.c,network-gperf.gperf,network.h}
+    patch -p1 --fuzz=3 < ~/v4gw.patch    # the man/+src/ hunks
+    quilt refresh                        # writes a clean fuzz-0 patch, appends to series
+    DEB_BUILD_OPTIONS=nocheck dpkg-buildpackage -b -uc -us
+    sudo dpkg -i ../systemd_*_$(dpkg --print-architecture).deb   # same-version reinstall
+
+Keep the package version unchanged so the `systemd` deb's tight
+same-version dependencies on `libsystemd-shared`/`udev`/`libsystemd0`
+stay satisfied; the patch touches only networkd, so the stock shared
+library is unaffected. On Ubuntu the handoff also means neutralising
+netplan/cloud-init for the interface (there is no SELinux to consider).
+
+Validated end to end on Fedora 44 (systemd 259.7) and Ubuntu 26.04
+(systemd 259.5): the rebuilt `systemd-networkd` takes a real interface
+over from NetworkManager and installs `default via inet6 fe80:… proto
+dhcp` — an IPv4 default with an IPv6 next hop, no ARP for the gateway —
+reaching the IPv4 internet from an IPv6-only segment. It survives a reboot
+on both (Fedora under SELinux **enforcing**, zero AVC denials).
