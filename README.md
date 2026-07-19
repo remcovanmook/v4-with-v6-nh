@@ -98,8 +98,9 @@ implementation would close those gaps.
   warning-free, `test-network` integration test 100/100); NetworkManager
   (Fedora 44 / NM 1.56.1 — the Linux daemon coexists with no NM-specific
   code: zero-ARP §4 takeover, route survives `reapply` and a connection
-  bounce); ifupdown (same daemon, by construction — DHCP-client-dependent,
-  see `host/ifupdown/`); FreeBSD user-space daemon (vnet-jail lab,
+  bounce); ifupdown (Debian 13 / dhcpcd — validated: dhcpcd installs the
+  sentinel + on-link /32 natively, v4gwd takes over §4, route survives a
+  renewal and an interface bounce); FreeBSD user-space daemon (vnet-jail lab,
   connectivity + zero-ARP on FreeBSD 15.1); macOS daemon (no kernel v4-via-v6 support — follows the
   IPv6 default router and maintains a static ARP entry for 192.0.0.11;
   validated end to end on macOS 26, zero-ARP + connectivity); and a

@@ -48,7 +48,9 @@ That is the whole integration: the DHCP client installs `default via
 
 ## Status
 
-By construction — ifupdown shares the daemon validated under NetworkManager
-(Fedora 44, zero-ARP §4 takeover). The only ifupdown-specific variable is the
-DHCP client's off-subnet-gateway handling, noted above; not yet exercised on an
-ifupdown host directly.
+Validated end to end on Debian 13 (trixie), ifupdown + dhcpcd, against the live
+RFC 5549 router: dhcpcd installs the off-subnet `default via 192.0.0.11` with
+its own on-link `/32` (stock §5.3 works), `v4gwd --require-sentinel` takes over
+§4 (`RTA_VIA` default at metric 50, beating dhcpcd's metric 1002), and that
+route survives a dhcpcd renewal (`dhcpcd --rebind`) and re-asserts after a full
+interface bounce (`systemctl restart networking`).
