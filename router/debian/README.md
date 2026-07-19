@@ -46,10 +46,15 @@ racing the network:
   provokes the host's EUI-64 GUA into the cache first, since a cold lease has
   only surfaced the link-local): a GUA survives the EUI-64 → RFC 7217
   link-local churn at bring-up and is routable beyond the local link, where a
-  link-local is meaningless. A host that is RFC 7217 for its GUA too has no
-  EUI-64 GUA, so it falls back to its (equally stable) link-local. This stands
-  in for real route distribution (BGP/RFC 8950); at scale the operator supplies
-  the stable subscriber identity via DHCPv6-PD or their own SOP.
+  link-local is meaningless. A host using RFC 7217 for its GUA (the modern
+  default — systemd/NetworkManager stable-privacy) has no MAC-derived address
+  the router can provoke, so it falls back to its (equally stable) link-local:
+  that works for a **directly-attached** host but is not routable past the
+  first hop. Learning an RFC 7217 GUA from the router side needs SAVI /
+  ND-snooping (RFC 7513), which this hook does not do — it stands in for real
+  route distribution (BGP/RFC 8950), and at scale the operator supplies the
+  stable subscriber identity via SAVI, DHCPv6-PD, or their own SOP (stateful
+  DHCPv6-NA is out — Android is SLAAC-only).
 
 dnsmasq serves the IPv4 pool on an interface with no IPv4 address of its own
 via its `shared-network` option (the `192.0.0.11` address selects the

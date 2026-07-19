@@ -42,8 +42,9 @@ legacy/  the original 2024/25 mechanism this work grew out of
 
 ## Quick start
 
-Requirements: Linux ≥ 5.2 (IPv4 routes with IPv6 next hops), Python 3,
-pyroute2, iproute2, tcpdump.
+Requirements: Python 3, pyroute2, iproute2, tcpdump. Linux ≥ 5.2 uses the
+native IPv4-via-IPv6-next-hop path; older kernels fall back to the static-ARP
+realization automatically.
 
 ```
 pip install pyroute2
@@ -78,10 +79,12 @@ cache changes over netlink, and withdraws its route when the sentinel
 disappears (DHCPv4 lease expiry) or no usable router remains.
 
 FreeBSD carries the same RFC 5549 data plane in kernel. Stacks with no
-kernel v4-via-v6 support — macOS and Windows — reach the identical on-wire
-behaviour with a static-neighbor realization: a daemon pins 192.0.0.11 to
-the IPv6 default router's link-layer address (read from the neighbor cache,
-never ARP) and re-slaves it as that router changes.
+kernel v4-via-v6 support — macOS, Windows, and pre-5.2 Linux — reach the
+identical on-wire behaviour with a static-neighbor realization: a daemon pins
+192.0.0.11 to the IPv6 default router's link-layer address (read from the
+neighbor cache, never ARP) and re-slaves it as that router changes. `v4gwd`
+selects this fallback automatically on a kernel below 5.2 (or with
+`--static-arp`).
 
 A user-space daemon cannot queue individual packets pending first RA
 reception; this and other approximations are documented precisely in

@@ -24,6 +24,15 @@ ARP.  This daemon therefore implements Section 4 by:
      expiry -- Section 4, "SHOULD remove ... and cease") or when no
      usable IPv6 default router remains.
 
+On a pre-5.2 kernel (no RTA_VIA) the daemon falls back to the same
+static-neighbor realization the macOS and Windows daemons use: it pins a
+permanent IPv4 neighbor for 192.0.0.11 to the IPv6 default router's MAC
+(read from the ND cache), so the stock "default via 192.0.0.11" installed
+by DHCP resolves to that MAC with no ARP.  It follows the IPv6 router and
+re-asserts the entry if an external flush leaves a dynamic (ARP-learned)
+one.  The mode is chosen from the kernel version, or forced with
+--static-arp.
+
 Per-packet queueing semantics (Section 4, startup behavior) cannot be
 implemented from user space; see docs/conformance.md for the exact
 mapping of normative statements to this implementation.
@@ -38,17 +47,20 @@ and re-reads full state via a dump on a separate socket, so a monitor
 overrun (ENOBUFS) degrades to a single redundant reconcile.
 
 Usage:
-    v4gwd.py [--require-sentinel] [--metric N] IFACE [IFACE...]
+    v4gwd.py [--require-sentinel] [--static-arp] [--metric N] IFACE [IFACE...]
 
   --require-sentinel  only manage an interface while a 192.0.0.11 IPv4
                       default route exists on it (DHCP-driven mode).
                       Without this flag the daemon manages the listed
                       interfaces unconditionally (static/lab mode).
+  --static-arp        force the pre-5.2 static-neighbor fallback (otherwise
+                      auto-selected from the running kernel version).
 """
 
 import argparse
 import errno
 import os
+import re
 import select
 import signal
 import socket
@@ -62,6 +74,7 @@ from pyroute2.netlink.exceptions import NetlinkError
 SENTINEL = "192.0.0.11"
 RT_PROTO = 199          # marks routes owned by this daemon
 DEFAULT_METRIC = 50     # must be lower than the sentinel route's metric
+NUD_PERMANENT = 0x80    # linux/neighbour.h: a static, non-expiring entry
 
 # RFC 4191 preference as encoded in RTA_PREF (ICMPV6_ROUTER_PREF_*)
 PREF_RANK = {1: 2, 0: 1, 3: 0}   # high > medium > low
@@ -81,14 +94,27 @@ def stop(signum, frame):
     running = False
 
 
+def kernel_has_rta_via():
+    """RTA_VIA (IPv4 route with an IPv6 next hop) landed in Linux 5.2."""
+    m = re.match(r"(\d+)\.(\d+)", os.uname().release)
+    if not m:
+        return True                        # unknown format: assume modern
+    return (int(m.group(1)), int(m.group(2))) >= (5, 2)
+
+
 class Interface:
-    def __init__(self, ipr, name, metric, require_sentinel):
+    def __init__(self, ipr, name, metric, require_sentinel, static_arp=False):
         self.ipr = ipr
         self.name = name
         self.metric = metric
         self.require_sentinel = require_sentinel
+        self.static_arp = static_arp
         self.index = None
-        self.installed_via = None  # IPv6 gateway we currently point at
+        self.installed_via = None  # IPv6 gateway our RTA_VIA route points at
+        self.installed_mac = None  # router MAC our static neighbor points at
+
+    def active(self):
+        return self.installed_via is not None or self.installed_mac is not None
 
     def resolve_index(self):
         links = self.ipr.link_lookup(ifname=self.name)
@@ -123,6 +149,15 @@ class Interface:
             return 0
         return neigh[0]["state"] if neigh else 0
 
+    def router_lladdr(self, gw):
+        """The IPv6 default router's link-layer address from the ND cache."""
+        try:
+            neigh = self.ipr.get_neighbours(
+                family=socket.AF_INET6, ifindex=self.index, dst=gw)
+        except NetlinkError:
+            return None
+        return neigh[0].get_attr("NDA_LLADDR") if neigh else None
+
     def select_router(self):
         """RFC 4191 selection: highest preference, then NUD REACHABLE,
         then most recently seen (last in netlink dump order)."""
@@ -153,9 +188,9 @@ class Interface:
         except OSError:
             pass
 
-    # -- route programming -------------------------------------------------
+    # -- programming: native RTA_VIA route --------------------------------
 
-    def install(self, gw):
+    def _install_route(self, gw):
         if self.installed_via == gw:
             return
         try:
@@ -170,7 +205,63 @@ class Interface:
             log(f"{self.name}: failed to install route via {gw}: {e}",
                 syslog.LOG_ERR)
 
+    # -- programming: pre-5.2 static-neighbor fallback --------------------
+
+    def _neighbor_present(self, mac):
+        """Is *our* permanent sentinel neighbor still installed with this MAC?
+        An external flush leaves a *dynamic* (ARP-learned) entry with the same
+        MAC; that counts as absent, so we re-assert the permanent one and keep
+        ARP suppressed -- the whole point of Section 4."""
+        try:
+            neigh = self.ipr.get_neighbours(
+                family=socket.AF_INET, ifindex=self.index, dst=SENTINEL)
+        except NetlinkError:
+            return False
+        for n in neigh:
+            if (n["state"] & NUD_PERMANENT) and n.get_attr("NDA_LLADDR") == mac:
+                return True
+        return False
+
+    def _pin_neighbor(self, gw):
+        """No RTA_VIA on this kernel: pin a permanent IPv4 neighbor for the
+        sentinel to the IPv6 router's MAC, so the stock 'default via
+        192.0.0.11' resolves to it without ARP (the macOS/Windows approach)."""
+        mac = self.router_lladdr(gw)
+        if mac is None:
+            return                     # router MAC not resolved yet; retry
+        if self.installed_mac == mac and self._neighbor_present(mac):
+            return
+        try:
+            self.ipr.neigh("replace", family=socket.AF_INET, dst=SENTINEL,
+                           lladdr=mac, ifindex=self.index, state=NUD_PERMANENT)
+            log(f"{self.name}: IPv4 gateway {SENTINEL} -> {mac} "
+                f"(static neighbor; kernel < 5.2, no RTA_VIA)")
+            self.installed_mac = mac
+        except NetlinkError as e:
+            log(f"{self.name}: failed to pin {SENTINEL} -> {mac}: {e}",
+                syslog.LOG_ERR)
+
+    def install(self, gw):
+        if self.static_arp:
+            self._pin_neighbor(gw)
+        else:
+            self._install_route(gw)
+
     def withdraw(self, reason):
+        if self.static_arp:
+            if self.installed_mac is None:
+                return
+            try:
+                self.ipr.neigh("del", family=socket.AF_INET, dst=SENTINEL,
+                               ifindex=self.index)
+                log(f"{self.name}: withdrew static neighbor for {SENTINEL} "
+                    f"({reason})")
+            except NetlinkError as e:
+                if e.code not in (errno.ENOENT, errno.ESRCH):
+                    log(f"{self.name}: failed to withdraw neighbor: {e}",
+                        syslog.LOG_ERR)
+            self.installed_mac = None
+            return
         try:
             self.ipr.route(
                 "del", family=socket.AF_INET, dst="0.0.0.0/0",
@@ -186,24 +277,24 @@ class Interface:
 
     def reconcile(self):
         if self.resolve_index() is None:
-            if self.installed_via:
-                self.installed_via = None  # interface gone, routes gone
+            self.installed_via = None  # interface gone, routes/neigh gone
+            self.installed_mac = None
             return
 
         if self.require_sentinel and not self.sentinel_present():
-            if self.installed_via:
+            if self.active():
                 self.withdraw("sentinel 192.0.0.11 removed; ceasing per s4")
             return
 
         gw = self.select_router()
         if gw is None:
-            if self.installed_via:
+            if self.active():
                 self.withdraw("no IPv6 default router on interface")
             return
 
         state = self.nud_state(gw)
         if state not in NUD_USABLE:
-            # INCOMPLETE/FAILED/NONE: solicit, keep existing route if any
+            # INCOMPLETE/FAILED/NONE: solicit, keep existing entry if any
             self.kick_nud(gw)
 
         self.install(gw)
@@ -215,12 +306,22 @@ def main():
     ap.add_argument("--require-sentinel", action="store_true",
                     help="act only while a 192.0.0.11 IPv4 default route "
                          "exists on the interface")
+    ap.add_argument("--static-arp", action="store_true",
+                    help="force the pre-5.2 static-neighbor fallback "
+                         "(auto-selected from the kernel version otherwise)")
     ap.add_argument("--metric", type=int, default=DEFAULT_METRIC)
     args = ap.parse_args()
 
     syslog.openlog(ident="v4gwd", facility=syslog.LOG_DAEMON)
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
+
+    static_arp = args.static_arp or not kernel_has_rta_via()
+    if static_arp:
+        why = "forced" if args.static_arp else \
+            f"kernel {os.uname().release} < 5.2, no RTA_VIA"
+        log(f"static-neighbor fallback active ({why}): pinning {SENTINEL} "
+            f"to the IPv6 default router's MAC, no ARP")
 
     # Wakeup pipe so signals interrupt poll() (PEP 475 retries EINTR)
     rpipe, wpipe = os.pipe()
@@ -234,7 +335,7 @@ def main():
                     rtnl.RTMGRP_LINK |
                     rtnl.RTMGRP_NEIGH)
 
-    ifaces = [Interface(ipr, n, args.metric, args.require_sentinel)
+    ifaces = [Interface(ipr, n, args.metric, args.require_sentinel, static_arp)
               for n in args.interfaces]
 
     for i in ifaces:
@@ -260,7 +361,7 @@ def main():
                 i.reconcile()
 
     for i in ifaces:
-        if i.installed_via:
+        if i.active():
             i.withdraw("daemon shutdown")
     ipr.close()
     mon.close()
