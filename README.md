@@ -14,6 +14,8 @@ host/    v4gwd.py — Linux host daemon implementing draft Section 4
          (sentinel detection, RFC 4191 router selection, route
          programming via IPv6 next hop) + systemd unit;
          systemd-networkd/ — native networkd patch;
+         networkmanager/ — coexistence notes (v4gwd.py needs no
+         NM-specific code; it races a lower-metric RTA_VIA default);
          freebsd/ — C daemon for FreeBSD 13.1+ (RFC 5549 data plane)
          with dhclient-exit-hooks and rc.d integration;
          macos/ — C daemon for macOS (no kernel v4-via-v6 needed:
@@ -92,9 +94,11 @@ implementation would close those gaps.
 - Host implementations, all verified on real systems: Linux user-space
   daemon (netns lab, 6/6 conformance tests on Fedora 44 / kernel 6.19);
   systemd-networkd native patch (applies to systemd main, builds
-  warning-free, `test-network` integration test 100/100); FreeBSD
-  user-space daemon (vnet-jail lab, connectivity + zero-ARP on
-  FreeBSD 15.1); macOS daemon (no kernel v4-via-v6 support — follows the
+  warning-free, `test-network` integration test 100/100); NetworkManager
+  (Fedora 44 / NM 1.56.1 — the Linux daemon coexists with no NM-specific
+  code: zero-ARP §4 takeover, route survives `reapply` and a connection
+  bounce); FreeBSD user-space daemon (vnet-jail lab, connectivity +
+  zero-ARP on FreeBSD 15.1); macOS daemon (no kernel v4-via-v6 support — follows the
   IPv6 default router and maintains a static ARP entry for 192.0.0.11;
   validated end to end on macOS 26, zero-ARP + connectivity); and a
   Windows daemon (PowerShell `v4gwd.ps1` + native C service via the IP
