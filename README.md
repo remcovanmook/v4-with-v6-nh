@@ -42,8 +42,11 @@ legacy/  the original 2024/25 mechanism this work grew out of
 
 ## Quick start
 
-Requirements: Python 3, pyroute2, iproute2, tcpdump. Linux ≥ 5.2 uses the
-native IPv4-via-IPv6-next-hop path; older kernels fall back to the static-ARP
+Requirements: the daemon itself needs only **Python 3 and pyroute2** — it
+speaks netlink directly (no `ip`, no `tcpdump`, no subprocesses). The netns lab
+and conformance tests below additionally use iproute2 and tcpdump (the latter
+for the zero-ARP assertion). Linux ≥ 5.2 gives the native
+IPv4-via-IPv6-next-hop path; older kernels fall back to the static-ARP
 realization automatically.
 
 ```
