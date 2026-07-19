@@ -1,12 +1,11 @@
 [Unit]
-Description=IPv6-Resolved IPv4 Gateway daemon (%i)
+Description=IPv6-Resolved IPv4 Gateway daemon
 Documentation=https://datatracker.ietf.org/doc/draft-vanmook-intarea-ipv6-resolved-gateway/
 After=network.target
-BindsTo=sys-subsystem-net-devices-%i.device
 
 [Service]
 Type=exec
-ExecStart=/usr/local/bin/v4gwd.py --require-sentinel %i
+ExecStart=/usr/local/bin/v4gwd.py
 Restart=on-failure
 RestartSec=5
 AmbientCapabilities=CAP_NET_ADMIN

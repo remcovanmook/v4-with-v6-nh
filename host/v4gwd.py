@@ -30,8 +30,7 @@ permanent IPv4 neighbor for 192.0.0.11 to the IPv6 default router's MAC
 (read from the ND cache), so the stock "default via 192.0.0.11" installed
 by DHCP resolves to that MAC with no ARP.  It follows the IPv6 router and
 re-asserts the entry if an external flush leaves a dynamic (ARP-learned)
-one.  The mode is chosen from the kernel version, or forced with
---static-arp.
+one.  The mode is selected from the running kernel version.
 
 Per-packet queueing semantics (Section 4, startup behavior) cannot be
 implemented from user space; see docs/conformance.md for the exact
@@ -47,14 +46,15 @@ and re-reads full state via a dump on a separate socket, so a monitor
 overrun (ENOBUFS) degrades to a single redundant reconcile.
 
 Usage:
-    v4gwd.py [--require-sentinel] [--static-arp] [--metric N] IFACE [IFACE...]
+    v4gwd.py [--unconditional] [--metric N] [IFACE ...]
 
-  --require-sentinel  only manage an interface while a 192.0.0.11 IPv4
-                      default route exists on it (DHCP-driven mode).
-                      Without this flag the daemon manages the listed
-                      interfaces unconditionally (static/lab mode).
-  --static-arp        force the pre-5.2 static-neighbor fallback (otherwise
-                      auto-selected from the running kernel version).
+  IFACE ...       interfaces to manage.  With none given, every ethernet
+                  interface is managed and interfaces that appear later are
+                  picked up automatically.
+  --unconditional manage an interface without requiring a 192.0.0.11 default
+                  route on it (static/lab mode).  By default the sentinel
+                  route is required, so the daemon is inert on ordinary
+                  networks and safe to leave running everywhere.
 """
 
 import argparse
@@ -100,6 +100,17 @@ def kernel_has_rta_via():
     if not m:
         return True                        # unknown format: assume modern
     return (int(m.group(1)), int(m.group(2))) >= (5, 2)
+
+
+def ethernet_ifnames(ipr):
+    """Names of the host's ethernet interfaces (ARPHRD_ETHER)."""
+    names = set()
+    for link in ipr.get_links():
+        if link.get("ifi_type") == 1:      # ARPHRD_ETHER
+            name = link.get_attr("IFLA_IFNAME")
+            if name:
+                names.add(name)
+    return names
 
 
 class Interface:
@@ -300,15 +311,35 @@ class Interface:
         self.install(gw)
 
 
+def serve(mon, rpipe, ifaces, refresh):
+    """Block on netlink events (or a signal) and reconcile on each wake."""
+    poller = select.poll()
+    poller.register(mon.fileno(), select.POLLIN)
+    poller.register(rpipe, select.POLLIN)
+    while running:
+        for fd, _ in poller.poll():
+            if fd == rpipe:
+                os.read(rpipe, 64)    # drain wakeup bytes
+                continue
+            try:
+                for _ in mon.get():   # drain; contents don't matter,
+                    pass              # reconcile is idempotent
+            except OSError:
+                pass                  # ENOBUFS et al.: reconcile anyway
+        if running:
+            refresh()                 # pick up newly appeared interfaces
+            for i in ifaces.values():
+                i.reconcile()
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("interfaces", nargs="+", metavar="IFACE")
-    ap.add_argument("--require-sentinel", action="store_true",
-                    help="act only while a 192.0.0.11 IPv4 default route "
-                         "exists on the interface")
-    ap.add_argument("--static-arp", action="store_true",
-                    help="force the pre-5.2 static-neighbor fallback "
-                         "(auto-selected from the kernel version otherwise)")
+    ap.add_argument("interfaces", nargs="*", metavar="IFACE",
+                    help="interfaces to manage (default: all ethernet)")
+    ap.add_argument("--unconditional", action="store_true",
+                    help="manage without requiring a 192.0.0.11 default route "
+                         "(static/lab mode); the sentinel route is required "
+                         "by default")
     ap.add_argument("--metric", type=int, default=DEFAULT_METRIC)
     args = ap.parse_args()
 
@@ -316,12 +347,13 @@ def main():
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
 
-    static_arp = args.static_arp or not kernel_has_rta_via()
-    if static_arp:
-        why = "forced" if args.static_arp else \
-            f"kernel {os.uname().release} < 5.2, no RTA_VIA"
-        log(f"static-neighbor fallback active ({why}): pinning {SENTINEL} "
-            f"to the IPv6 default router's MAC, no ARP")
+    static_arp = not kernel_has_rta_via()
+    require_sentinel = not args.unconditional
+    auto = not args.interfaces
+    dp = "static neighbor (no RTA_VIA)" if static_arp else "native RTA_VIA"
+    scope = "all ethernet interfaces" if auto else " ".join(args.interfaces)
+    log(f"starting: {dp}; managing {scope}; "
+        f"{'sentinel required' if require_sentinel else 'unconditional'}")
 
     # Wakeup pipe so signals interrupt poll() (PEP 475 retries EINTR)
     rpipe, wpipe = os.pipe()
@@ -335,32 +367,22 @@ def main():
                     rtnl.RTMGRP_LINK |
                     rtnl.RTMGRP_NEIGH)
 
-    ifaces = [Interface(ipr, n, args.metric, args.require_sentinel, static_arp)
-              for n in args.interfaces]
+    ifaces = {}    # name -> Interface, grown as ethernet interfaces appear
 
-    for i in ifaces:
+    def refresh():
+        names = ethernet_ifnames(ipr) if auto else set(args.interfaces)
+        for n in names:
+            if n not in ifaces:
+                ifaces[n] = Interface(ipr, n, args.metric,
+                                      require_sentinel, static_arp)
+
+    refresh()
+    for i in ifaces.values():
         i.reconcile()
 
-    poller = select.poll()
-    poller.register(mon.fileno(), select.POLLIN)
-    poller.register(rpipe, select.POLLIN)
+    serve(mon, rpipe, ifaces, refresh)
 
-    while running:
-        events = poller.poll()        # block: netlink events or a signal
-        for fd, _ in events:
-            if fd == rpipe:
-                os.read(rpipe, 64)    # drain wakeup bytes
-                continue
-            try:
-                for _ in mon.get():   # drain; message contents don't
-                    pass              # matter, reconcile is idempotent
-            except OSError:
-                pass                  # ENOBUFS et al.: reconcile anyway
-        if running:
-            for i in ifaces:
-                i.reconcile()
-
-    for i in ifaces:
+    for i in ifaces.values():
         if i.active():
             i.withdraw("daemon shutdown")
     ipr.close()

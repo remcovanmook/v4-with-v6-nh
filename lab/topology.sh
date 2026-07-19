@@ -15,9 +15,9 @@
 #
 # Usage: topology.sh up [--sentinel] | down | status
 #   --sentinel  also install "default via 192.0.0.11 onlink" on the
-#               hosts and run v4gwd with --require-sentinel, exercising
-#               the DHCP-driven mode.  Without it, v4gwd runs in
-#               static/lab mode.
+#               hosts, exercising v4gwd's default DHCP-driven mode
+#               (sentinel required).  Without it, v4gwd runs with
+#               --unconditional (static/lab mode).
 
 set -euo pipefail
 
@@ -110,13 +110,13 @@ up() {
     ip -n v4nh-r1 -6 route add 2001:db8:2::/64 via "$R2_R" dev r12
     ip -n v4nh-r2 -6 route add 2001:db8:1::/64 via "$R1_R" dev r12
 
-    GWD_ARGS=""
+    GWD_ARGS="--unconditional"
     if [ "$SENTINEL_MODE" = 1 ]; then
         # DHCP-driven mode: sentinel route as a DHCPv4 client would
         # install it (onlink: no subnet exists to contain the gateway).
         ip -n v4nh-hostA route add default via 192.0.0.11 dev a1 onlink metric 100
         ip -n v4nh-hostB route add default via 192.0.0.11 dev b1 onlink metric 100
-        GWD_ARGS="--require-sentinel"
+        GWD_ARGS=""                 # sentinel required is the default
     fi
 
     # Host daemons: implement Section 4 next-hop resolution.
