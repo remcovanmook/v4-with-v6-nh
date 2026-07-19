@@ -24,15 +24,14 @@ daemons suppress even that).
 ## What each piece does
 
 The router state lives in native config, each in its canonical location (the
-`etc/` tree here mirrors `/etc/`), so it comes up at boot with no setup script
-racing the network:
+`etc/` tree here mirrors `/etc/`):
 
 - **`etc/sysctl.d/99-v4gw.conf`** — enables IPv4 + IPv6 forwarding, and keeps
   `accept_ra=2` on the uplink so it still learns its SLAAC address / default
   route once forwarding is on.
 - **`etc/network/interfaces.d/v4gw`** — brings up the host interface with the
   router's IPv6 GUA and `192.0.0.11/32 scope link`, and puts the ping target
-  `203.0.113.1/32` on `lo`. No IPv4 subnet — that is the whole point.
+  `203.0.113.1/32` on `lo`.
 - **`etc/nftables.conf`** — NATs both documentation prefixes out the uplink
   (`oifname != <host-iface>`, so it needs no default route present at load
   time). Loaded by `nftables.service`.
@@ -40,21 +39,15 @@ racing the network:
   — RA (advertises this router as the IPv6 default router + SLAAC prefix, with
   RDNSS) and DHCPv4 (`/32` leases, `Router=192.0.0.11`, no option 6/121/249).
 - **`usr/local/sbin/v4gw-lease.sh`** (dnsmasq `dhcp-script`) — installs each
-  host's RFC 5549 return route `198.51.100.x/32 via inet6 <host-IPv6>`,
-  discovering the host's next-hop by matching the DHCP MAC in the router's ND
-  cache. It **prefers a stable global address over the link-local** (and
-  provokes the host's EUI-64 GUA into the cache first, since a cold lease has
-  only surfaced the link-local): a GUA survives the EUI-64 → RFC 7217
-  link-local churn at bring-up and is routable beyond the local link, where a
-  link-local is meaningless. A host using RFC 7217 for its GUA (the modern
-  default — systemd/NetworkManager stable-privacy) has no MAC-derived address
-  the router can provoke, so it falls back to its (equally stable) link-local:
-  that works for a **directly-attached** host but is not routable past the
-  first hop. Learning an RFC 7217 GUA from the router side needs SAVI /
-  ND-snooping (RFC 7513), which this hook does not do — it stands in for real
-  route distribution (BGP/RFC 8950), and at scale the operator supplies the
-  stable subscriber identity via SAVI, DHCPv6-PD, or their own SOP (stateful
-  DHCPv6-NA is out — Android is SLAAC-only).
+  host's RFC 5549 return route `198.51.100.x/32 via inet6 <host-IPv6>`, finding
+  the next hop by the DHCP MAC in the router's ND cache. It prefers a stable
+  global address over the link-local (provoking the host's EUI-64 GUA into the
+  cache), so the route stays routable beyond the local link. A host using
+  RFC 7217 for its GUA (the systemd/NetworkManager default) has no MAC-derived
+  GUA to provoke and falls back to its stable link-local, routable only on the
+  directly-attached segment. This hook stands in for route distribution
+  (BGP/RFC 8950); at scale the operator supplies a stable per-subscriber IPv6
+  identity via SAVI/ND-snooping (RFC 7513), DHCPv6-PD, or their own SOP.
 
 dnsmasq serves the IPv4 pool on an interface with no IPv4 address of its own
 via its `shared-network` option (the `192.0.0.11` address selects the
@@ -93,15 +86,12 @@ hosts, run the matching daemon (`v4gwd`, `v4gwd.py`, `v4gwd-arp`, or
 
 ## Per-host notes
 
-The one cross-OS point is the DHCPv4 client accepting an **off-subnet**
-default gateway (192.0.0.11 is in no host subnet). Testing across Linux,
-FreeBSD, macOS and Windows found every client installs the Router-option
-(option 3) gateway on its own, so option 121 (and Microsoft's option 249) are
-deliberately **not** sent — per RFC 3442 they would take precedence over
-option 3 and defeat the native IPv6-resolved path (see the notes in
-`dnsmasq.conf`). Where a client ever refuses the off-subnet gateway, set the
-host's IPv4 `/32` and `default via 192.0.0.11` by hand and run the daemon in
-`-r`/unconditional mode — the router side is unchanged either way.
+The DHCPv4 client must accept an off-subnet default gateway (192.0.0.11 is in
+no host subnet); Linux, FreeBSD, macOS and Windows all do. Option 121 and
+Microsoft's option 249 must not be sent — per RFC 3442 they take precedence
+over option 3 and defeat the IPv6-resolved path (see the notes in
+`dnsmasq.conf`). If a client refuses the off-subnet gateway, set the host's
+IPv4 `/32` and `default via 192.0.0.11` by hand; the router side is unchanged.
 
 ## Status
 
@@ -111,5 +101,5 @@ IPv6-only segment: dnsmasq serves DHCPv4 with no IPv4 address on the interface
 (`shared-network`), the `/32` handout and RA (with RDNSS) are honoured across
 all four OSes, the lease hook installs each host's RFC 5549 return route, and
 the hosts reach both a target behind the router and the real IPv4/IPv6
-internet. The native config is reboot-safe with no setup script — verified
-cold: forwarding, NAT, addresses, and dnsmasq all come up from config alone.
+internet. The native config is reboot-safe — verified cold: forwarding, NAT,
+addresses, and dnsmasq all come up from config alone.
