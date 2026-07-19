@@ -40,9 +40,16 @@ racing the network:
   — RA (advertises this router as the IPv6 default router + SLAAC prefix, with
   RDNSS) and DHCPv4 (`/32` leases, `Router=192.0.0.11`, no option 6/121/249).
 - **`usr/local/sbin/v4gw-lease.sh`** (dnsmasq `dhcp-script`) — installs each
-  host's RFC 5549 return route `198.51.100.x/32 via inet6 <host-ll>`, finding
-  the link-local by matching the DHCP MAC in the router's ND cache. This
-  stands in for real route distribution (BGP/RFC 8950), out of scope here.
+  host's RFC 5549 return route `198.51.100.x/32 via inet6 <host-IPv6>`,
+  discovering the host's next-hop by matching the DHCP MAC in the router's ND
+  cache. It **prefers a stable global address over the link-local** (and
+  provokes the host's EUI-64 GUA into the cache first, since a cold lease has
+  only surfaced the link-local): a GUA survives the EUI-64 → RFC 7217
+  link-local churn at bring-up and is routable beyond the local link, where a
+  link-local is meaningless. A host that is RFC 7217 for its GUA too has no
+  EUI-64 GUA, so it falls back to its (equally stable) link-local. This stands
+  in for real route distribution (BGP/RFC 8950); at scale the operator supplies
+  the stable subscriber identity via DHCPv6-PD or their own SOP.
 
 dnsmasq serves the IPv4 pool on an interface with no IPv4 address of its own
 via its `shared-network` option (the `192.0.0.11` address selects the
