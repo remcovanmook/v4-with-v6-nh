@@ -33,8 +33,7 @@ router/  debian/ — the working testbed router (RA + DHCPv4, RFC 5549 return
          unmodified-host ARP tier, §5.2 enforcement) across five commercial
          platforms
 docs/    conformance.md — every normative statement in Sections 4–5 mapped to
-         code, kernel behaviour, or a documented gap;
-         draft-notes.md — proposed additions for the I-D
+         code, kernel behaviour, or a documented gap
 legacy/  the 2024/25 mechanism this work grew out of (IPv4 default route
          follows the IPv6 default gateway) — prior art, not draft-conformant
 ```
