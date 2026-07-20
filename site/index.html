@@ -3,58 +3,166 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>v4gwd packages</title>
+<title>v4gwd — downloads</title>
 <style>
   :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
   body {
     font: 16px/1.6 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-    max-width: 46rem; margin: 0 auto; padding: 2.5rem 1.25rem 4rem;
+    max-width: 52rem; margin: 0 auto; padding: 2.5rem 1.25rem 4rem;
     color: #1a1a1a; background: #fff;
   }
-  h1 { font-size: 1.7rem; margin: 0 0 .25rem; }
-  h2 { font-size: 1.05rem; margin: 2rem 0 .5rem; }
-  .sub { color: #666; margin: 0 0 2rem; }
-  a { color: #0b62c4; }
-  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
+  h1 { font-size: 1.8rem; margin: 0 0 .25rem; }
+  h2 { font-size: 1.2rem; margin: 2.5rem 0 .25rem; border-bottom: 1px solid #e2e4e8; padding-bottom: .3rem; }
+  .sub { color: #666; margin: 0 0 1.5rem; }
+  .when { color: #555; margin: .35rem 0 .75rem; }
+  .when b { color: inherit; }
+  a { color: #0b62c4; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   pre {
     background: #f5f6f8; border: 1px solid #e2e4e8; border-radius: 8px;
-    padding: .85rem 1rem; overflow-x: auto;
+    padding: .8rem 1rem; overflow-x: auto; font-size: .87rem; margin: .5rem 0;
   }
-  .pkg { color: #666; font-size: .9rem; }
-  footer { margin-top: 3rem; color: #888; font-size: .85rem; }
+  .callout {
+    background: #eef4fd; border: 1px solid #cfe0f8; border-radius: 8px;
+    padding: .8rem 1rem; margin: 1.25rem 0; font-size: .95rem;
+  }
+  .tablewrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: .92rem; margin: .5rem 0; }
+  th, td { text-align: left; padding: .5rem .7rem; border-bottom: 1px solid #e2e4e8; vertical-align: top; }
+  th { color: #666; font-weight: 600; }
+  .dl { font-size: .9rem; margin: .25rem 0 .5rem; }
+  .dl a { font-family: ui-monospace, monospace; }
+  .arch { color: #888; font-size: .82rem; }
+  footer { margin-top: 3rem; color: #888; font-size: .85rem; border-top: 1px solid #e2e4e8; padding-top: 1rem; }
   @media (prefers-color-scheme: dark) {
     body { color: #e6e6e6; background: #16181d; }
-    .sub, .pkg, footer { color: #9aa0a8; }
+    h2 { border-color: #2c3038; }
+    .sub, .when, .arch, footer { color: #9aa0a8; }
     a { color: #6cb0ff; }
     pre { background: #1f2229; border-color: #2c3038; }
+    .callout { background: #172233; border-color: #294064; }
+    th { color: #9aa0a8; }
+    th, td { border-color: #2c3038; }
+    footer { border-color: #2c3038; }
   }
 </style>
 </head>
 <body>
+
 <h1>v4gwd</h1>
-<p class="sub">Host daemon for
+<p class="sub">Host implementations of
 <a href="https://datatracker.ietf.org/doc/draft-vanmook-intarea-ipv6-resolved-gateway/">draft-vanmook-intarea-ipv6-resolved-gateway</a>
-— IPv4 over IPv6-only segments, gateway 192.0.0.11 resolved from the IPv6
-neighbor cache instead of ARP.</p>
+— IPv4 on IPv6-only segments via gateway <b>192.0.0.11</b>, resolved from the
+IPv6 neighbor cache instead of ARP.</p>
 
-<p>Architecture-independent packages (pure Python + pyroute2). Installing
-enables and starts <code>v4gwd.service</code>; it manages every ethernet
-interface and stays inert until a DHCPv4 server hands out 192.0.0.11.</p>
+<div class="callout">
+A stock host on a sentinel segment often already works (draft §5.3): it accepts
+the off-subnet <code>/32</code> gateway and resolves it by ARP, which the router
+answers. The packages below add the draft's §4 guarantees — the host resolves
+192.0.0.11 <em>from Neighbor Discovery, never ARP</em>, and follows the live
+IPv6 default router — which is what lets the gateway stop answering ARP.
+</div>
 
-<h2>Debian / Ubuntu</h2>
+<h2>Which one?</h2>
+<div class="tablewrap">
+<table>
+  <tr><th>Platform</th><th>Package</th><th>When</th></tr>
+  <tr>
+    <td>Linux</td><td><a href="#linux">v4gwd</a> (.deb/.rpm)</td>
+    <td>General-purpose. Any distro with systemd; pure Python user-space daemon.</td>
+  </tr>
+  <tr>
+    <td>Linux</td><td><a href="#networkd">systemd-networkd</a></td>
+    <td>Hosts already on networkd wanting the behaviour native and in-process, no extra daemon.</td>
+  </tr>
+  <tr>
+    <td>FreeBSD</td><td><a href="#freebsd">v4gwd</a></td>
+    <td>FreeBSD 13.1+; uses the in-kernel RFC 5549 data plane.</td>
+  </tr>
+  <tr>
+    <td>macOS</td><td><a href="#macos">v4gwd-arp</a></td>
+    <td>macOS (Apple Silicon). Static-neighbor realization.</td>
+  </tr>
+  <tr>
+    <td>Windows</td><td><a href="#windows">v4gwd.ps1</a></td>
+    <td>Windows 10/11. PowerShell daemon; static-neighbor realization.</td>
+  </tr>
+</table>
+</div>
+<p class="when">Linux ≥ 5.2 and FreeBSD carry IPv4-route-with-IPv6-next-hop
+(RFC 5549) in the kernel; macOS, Windows, and pre-5.2 Linux reach identical
+on-wire behaviour by pinning 192.0.0.11 to the router's link-layer address. The
+Linux daemon picks the right mode from the running kernel automatically.</p>
+
+<h2 id="linux">Linux — v4gwd (.deb / .rpm)</h2>
+<p class="when">Portable user-space daemon (Python + pyroute2). Installing enables
+and starts <code>v4gwd.service</code>; it manages every ethernet interface and
+stays inert until a DHCPv4 server hands out 192.0.0.11. Architecture-independent.</p>
+<p><b>Debian / Ubuntu</b></p>
 <pre>wget https://remcovanmook.github.io/v4-with-v6-nh/v4gwd.deb
 sudo apt install ./v4gwd.deb</pre>
-
-<h2>Fedora / RHEL</h2>
+<p><b>Fedora / RHEL</b></p>
 <pre>wget https://remcovanmook.github.io/v4-with-v6-nh/v4gwd.rpm
 sudo dnf install ./v4gwd.rpm</pre>
+<p class="dl">Files: <a href="v4gwd.deb">v4gwd.deb</a> ·
+<a href="v4gwd.rpm">v4gwd.rpm</a> ·
+<a href="https://github.com/remcovanmook/v4-with-v6-nh/tree/main/host/packaging">details</a></p>
 
-<p class="pkg">Direct links follow the current release:
-<a href="v4gwd.deb">v4gwd.deb</a> · <a href="v4gwd.rpm">v4gwd.rpm</a>.
-Versioned filenames and other host builds (macOS, FreeBSD, Windows,
-systemd-networkd) are on the
-<a href="https://github.com/remcovanmook/v4-with-v6-nh/releases/tag/prebuilt">releases</a> page.</p>
+<h2 id="networkd">Linux — systemd-networkd (patched)</h2>
+<p class="when"><b>Native alternative</b> for hosts already using networkd:
+DHCPv4 client and Neighbor Discovery in one process, enabled per-link with
+<code>[DHCPv4] UseIPv6ResolvedGateway=yes</code> — no separate daemon. These are
+the stock package rebuilt with the patch; a later system upgrade replaces them
+with the unpatched binary, so reinstall (or rebuild) afterwards.</p>
+<p><b>Fedora 44</b> <span class="arch">(aarch64 / x86_64)</span></p>
+<pre>curl -LO https://remcovanmook.github.io/v4-with-v6-nh/systemd-networkd-259.7-1.fc44.$(uname -m).rpm
+sudo rpm -Uvh --force systemd-networkd-259.7-1.fc44.$(uname -m).rpm</pre>
+<p><b>Ubuntu 26.04 / Debian</b> <span class="arch">(arm64 / amd64)</span></p>
+<pre>curl -LO https://remcovanmook.github.io/v4-with-v6-nh/systemd_259.5-0ubuntu3_$(dpkg --print-architecture).deb
+sudo dpkg -i systemd_259.5-0ubuntu3_$(dpkg --print-architecture).deb</pre>
+<p class="dl">Files:
+<a href="systemd-networkd-259.7-1.fc44.aarch64.rpm">fc44.aarch64.rpm</a> ·
+<a href="systemd-networkd-259.7-1.fc44.x86_64.rpm">fc44.x86_64.rpm</a> ·
+<a href="systemd_259.5-0ubuntu3_arm64.deb">ubuntu3_arm64.deb</a> ·
+<a href="systemd_259.5-0ubuntu3_amd64.deb">ubuntu3_amd64.deb</a> ·
+<a href="https://github.com/remcovanmook/v4-with-v6-nh/tree/main/host/systemd-networkd">details</a></p>
 
-<footer>Source: <a href="https://github.com/remcovanmook/v4-with-v6-nh">github.com/remcovanmook/v4-with-v6-nh</a></footer>
+<h2 id="freebsd">FreeBSD — v4gwd</h2>
+<p class="when">Single-file C daemon for FreeBSD 13.1+, using the in-kernel
+RFC 5549 data plane. Wire it to <code>dhclient-exit-hooks</code> / rc.d per the
+docs.</p>
+<pre>fetch https://remcovanmook.github.io/v4-with-v6-nh/v4gwd-freebsd-$(uname -m)
+install -m 755 v4gwd-freebsd-$(uname -m) /usr/local/sbin/v4gwd</pre>
+<p class="dl">Files: <a href="v4gwd-freebsd-amd64">v4gwd-freebsd-amd64</a> ·
+<a href="v4gwd-freebsd-arm64">v4gwd-freebsd-arm64</a> ·
+<a href="https://github.com/remcovanmook/v4-with-v6-nh/tree/main/host/freebsd">details</a></p>
+
+<h2 id="macos">macOS — v4gwd-arp</h2>
+<p class="when">C daemon that follows the IPv6 default router and holds a static
+ARP entry for 192.0.0.11. macOS has no in-kernel RFC 5549, so it uses the
+static-neighbor realization. Apple Silicon binary; on Intel, build from source
+(<code>make</code>). Unsigned — run via <code>sudo</code>.</p>
+<pre>curl -LO https://remcovanmook.github.io/v4-with-v6-nh/v4gwd-arp-macos-arm64
+sudo install -m 755 v4gwd-arp-macos-arm64 /usr/local/sbin/v4gwd-arp</pre>
+<p class="dl">File: <a href="v4gwd-arp-macos-arm64">v4gwd-arp-macos-arm64</a> ·
+<a href="https://github.com/remcovanmook/v4-with-v6-nh/tree/main/host/macos">details</a></p>
+
+<h2 id="windows">Windows — v4gwd.ps1</h2>
+<p class="when">Single-file PowerShell daemon on the in-box NetTCPIP cmdlets;
+pins 192.0.0.11 to the IPv6 router's MAC and follows it. A native C service
+variant (IP Helper API) is in the repo. Run from an <b>elevated</b> PowerShell;
+see the docs to install it as a boot-time SYSTEM task.</p>
+<pre>Invoke-WebRequest https://remcovanmook.github.io/v4-with-v6-nh/v4gwd.ps1 -OutFile v4gwd.ps1
+powershell -ExecutionPolicy Bypass -File v4gwd.ps1 -Interface Ethernet</pre>
+<p class="dl">File: <a href="v4gwd.ps1">v4gwd.ps1</a> ·
+<a href="https://github.com/remcovanmook/v4-with-v6-nh/tree/main/host/windows">details</a></p>
+
+<footer>
+All files track the current <a href="https://github.com/remcovanmook/v4-with-v6-nh/releases/tag/prebuilt">prebuilt release</a>.
+Source and full documentation: <a href="https://github.com/remcovanmook/v4-with-v6-nh">github.com/remcovanmook/v4-with-v6-nh</a>.
+</footer>
+
 </body>
 </html>

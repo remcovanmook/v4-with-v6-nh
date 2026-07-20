@@ -39,10 +39,12 @@ jobs:
         run: |
           mkdir -p _site
           cp site/index.html _site/
+          # every prebuilt binary/package, under its release name
           gh release download prebuilt --repo "$GITHUB_REPOSITORY" \
-            --pattern 'v4gwd_*_all.deb' --pattern 'v4gwd-*.noarch.rpm' \
             --dir _site --clobber
-          # stable, version-less aliases for wget
+          # the Windows daemon ships as source, not a release asset
+          cp host/windows/v4gwd.ps1 _site/
+          # stable, version-less aliases for the Linux packages
           cp _site/v4gwd_*_all.deb   _site/v4gwd.deb
           cp _site/v4gwd-*.noarch.rpm _site/v4gwd.rpm
           ls -l _site
