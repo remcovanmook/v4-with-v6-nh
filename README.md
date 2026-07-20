@@ -106,7 +106,9 @@ this and other approximations are documented in
 - Prebuilt host binaries and patched systemd-networkd packages (macOS /
   FreeBSD / Fedora / Ubuntu; arm64 + amd64), plus noarch `.deb`/`.rpm` packages
   of the `v4gwd.py` daemon, are published as release assets under the `prebuilt`
-  tag — see each `host/*/prebuilt/` and `host/packaging/`.
+  tag. Download hub with per-platform install instructions:
+  <https://remcovanmook.github.io/v4-with-v6-nh/> (also each `host/*/prebuilt/`
+  and `host/packaging/`).
 - Router side: example configs for IOS XR, JunOS, SR OS, EOS and RouterOS in
   [router/vendor-configs/](router/vendor-configs/) (RFC 8950 return-path,
   192.0.0.11 termination and ARP tier, §5.2 enforcement). Lab behaviour
