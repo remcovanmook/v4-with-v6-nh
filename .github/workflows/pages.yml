@@ -1,0 +1,55 @@
+name: Pages
+
+# Publishes host/packaging's noarch packages at stable short URLs
+# (v4gwd.deb / v4gwd.rpm) by pulling them from the prebuilt release at
+# deploy time -- no binaries live in git. Re-runs whenever a release is
+# published so the links always track the current packages.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - site/**
+      - .github/workflows/pages.yml
+  release:
+    types: [published, edited]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assemble site
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p _site
+          cp site/index.html _site/
+          gh release download prebuilt --repo "$GITHUB_REPOSITORY" \
+            --pattern 'v4gwd_*_all.deb' --pattern 'v4gwd-*.noarch.rpm' \
+            --dir _site --clobber
+          # stable, version-less aliases for wget
+          cp _site/v4gwd_*_all.deb   _site/v4gwd.deb
+          cp _site/v4gwd-*.noarch.rpm _site/v4gwd.rpm
+          ls -l _site
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4

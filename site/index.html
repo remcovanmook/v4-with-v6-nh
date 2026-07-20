@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>v4gwd packages</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font: 16px/1.6 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    max-width: 46rem; margin: 0 auto; padding: 2.5rem 1.25rem 4rem;
+    color: #1a1a1a; background: #fff;
+  }
+  h1 { font-size: 1.7rem; margin: 0 0 .25rem; }
+  h2 { font-size: 1.05rem; margin: 2rem 0 .5rem; }
+  .sub { color: #666; margin: 0 0 2rem; }
+  a { color: #0b62c4; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
+  pre {
+    background: #f5f6f8; border: 1px solid #e2e4e8; border-radius: 8px;
+    padding: .85rem 1rem; overflow-x: auto;
+  }
+  .pkg { color: #666; font-size: .9rem; }
+  footer { margin-top: 3rem; color: #888; font-size: .85rem; }
+  @media (prefers-color-scheme: dark) {
+    body { color: #e6e6e6; background: #16181d; }
+    .sub, .pkg, footer { color: #9aa0a8; }
+    a { color: #6cb0ff; }
+    pre { background: #1f2229; border-color: #2c3038; }
+  }
+</style>
+</head>
+<body>
+<h1>v4gwd</h1>
+<p class="sub">Host daemon for
+<a href="https://datatracker.ietf.org/doc/draft-vanmook-intarea-ipv6-resolved-gateway/">draft-vanmook-intarea-ipv6-resolved-gateway</a>
+— IPv4 over IPv6-only segments, gateway 192.0.0.11 resolved from the IPv6
+neighbor cache instead of ARP.</p>
+
+<p>Architecture-independent packages (pure Python + pyroute2). Installing
+enables and starts <code>v4gwd.service</code>; it manages every ethernet
+interface and stays inert until a DHCPv4 server hands out 192.0.0.11.</p>
+
+<h2>Debian / Ubuntu</h2>
+<pre>wget https://remcovanmook.github.io/v4-with-v6-nh/v4gwd.deb
+sudo apt install ./v4gwd.deb</pre>
+
+<h2>Fedora / RHEL</h2>
+<pre>wget https://remcovanmook.github.io/v4-with-v6-nh/v4gwd.rpm
+sudo dnf install ./v4gwd.rpm</pre>
+
+<p class="pkg">Direct links follow the current release:
+<a href="v4gwd.deb">v4gwd.deb</a> · <a href="v4gwd.rpm">v4gwd.rpm</a>.
+Versioned filenames and other host builds (macOS, FreeBSD, Windows,
+systemd-networkd) are on the
+<a href="https://github.com/remcovanmook/v4-with-v6-nh/releases/tag/prebuilt">releases</a> page.</p>
+
+<footer>Source: <a href="https://github.com/remcovanmook/v4-with-v6-nh">github.com/remcovanmook/v4-with-v6-nh</a></footer>
+</body>
+</html>
