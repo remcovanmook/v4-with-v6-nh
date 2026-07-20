@@ -22,7 +22,8 @@ host/    v4gwd.py — Linux host daemon (draft Section 4): sentinel detection,
          macos/ — C daemon maintaining a static ARP entry that follows the
          IPv6 router;
          windows/ — PowerShell daemon + native C service, the same
-         static-neighbor realization via the IP Helper API
+         static-neighbor realization via the IP Helper API;
+         packaging/ — noarch .deb / .rpm build for v4gwd.py
 lab/     network-namespace lab reproducing the Section 5.1 topology, with
          conformance tests (incl. a zero-ARP assertion);
          freebsd/ — equivalent vnet-jail lab
@@ -103,8 +104,9 @@ this and other approximations are documented in
     192.0.0.11 to the ND-resolved router, follows a gateway change, and runs
     at boot.
 - Prebuilt host binaries and patched systemd-networkd packages (macOS /
-  FreeBSD / Fedora / Ubuntu; arm64 + amd64) are published as release assets
-  under the `prebuilt` tag — see each `host/*/prebuilt/`.
+  FreeBSD / Fedora / Ubuntu; arm64 + amd64), plus noarch `.deb`/`.rpm` packages
+  of the `v4gwd.py` daemon, are published as release assets under the `prebuilt`
+  tag — see each `host/*/prebuilt/` and `host/packaging/`.
 - Router side: example configs for IOS XR, JunOS, SR OS, EOS and RouterOS in
   [router/vendor-configs/](router/vendor-configs/) (RFC 8950 return-path,
   192.0.0.11 termination and ARP tier, §5.2 enforcement). Lab behaviour
