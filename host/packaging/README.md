@@ -12,15 +12,22 @@ interface and inert until a DHCPv4 server hands out `192.0.0.11`.
 
 ## Install
 
+Short URLs at <https://remcovanmook.github.io/v4-with-v6-nh/> track the current
+release.
+
 Debian / Ubuntu:
 
-    curl -LO https://github.com/remcovanmook/v4-with-v6-nh/releases/download/prebuilt/v4gwd_0.2.0_all.deb
-    sudo apt install ./v4gwd_0.2.0_all.deb
+    wget https://remcovanmook.github.io/v4-with-v6-nh/v4gwd.deb
+    sudo apt install ./v4gwd.deb
 
 Fedora / RHEL:
 
-    curl -LO https://github.com/remcovanmook/v4-with-v6-nh/releases/download/prebuilt/v4gwd-0.2.0-1.noarch.rpm
-    sudo dnf install ./v4gwd-0.2.0-1.noarch.rpm
+    wget https://remcovanmook.github.io/v4-with-v6-nh/v4gwd.rpm
+    sudo dnf install ./v4gwd.rpm
+
+The versioned assets (`v4gwd_0.2.0_all.deb`, `v4gwd-0.2.0-1.noarch.rpm`) are
+also on the [`prebuilt`](https://github.com/remcovanmook/v4-with-v6-nh/releases/tag/prebuilt)
+release.
 
 Then `journalctl -u v4gwd -f` to watch it act when the sentinel appears. On a
 pre-5.2 kernel the daemon selects the static-neighbor fallback on its own.
