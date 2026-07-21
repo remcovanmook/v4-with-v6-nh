@@ -17,17 +17,14 @@ IF=${DNSMASQ_INTERFACE:-}
 [ -n "$IF" ] || exit 0
 [ -n "$ip4" ] || exit 0
 
-# The client's return next-hop, discovered from the router's own ND cache by
-# matching the DHCP MAC.  Prefer a global address (in the advertised prefix)
-# over the link-local: a GUA is stable across the EUI-64 -> RFC 7217
-# link-local churn seen at bring-up, and -- unlike a link-local, which is only
-# meaningful one hop away -- it is a routable next-hop that survives a DHCP
-# relay or a routed access layer.  Fall back to the link-local for a host that
-# has not formed a GUA yet.  Only *resolved* neighbours carry the MAC on their
-# line, so stale INCOMPLETE/FAILED entries (e.g. an abandoned EUI-64 LL) are
-# skipped for free.  (Assumes one advertised prefix per segment; a host using
-# RFC 8981 privacy temporaries can yield a rotating GUA -- servers keep
-# use_tempaddr=0.)
+# Fallback return next-hop, read from the router's own ND cache by matching the
+# DHCP MAC: a global address the host has actually been using (e.g. an RFC 7217
+# GUA a renewing host formed) if one is cached, else the link-local its Router
+# Solicitation left behind.  A cached GUA is preferred -- unlike a link-local,
+# which is only meaningful one hop away, it survives a DHCP relay or a routed
+# access layer.  Only *resolved* neighbours carry the MAC on their line, so
+# INCOMPLETE/FAILED entries are skipped for free.  (A host using RFC 8981
+# privacy temporaries can yield a rotating GUA -- servers keep use_tempaddr=0.)
 find_nexthop() {
 	ip -6 neigh show dev "$IF" 2>/dev/null | awk \
 	    -v m="$(printf '%s' "$mac" | tr 'A-Z' 'a-z')" '
@@ -38,16 +35,20 @@ find_nexthop() {
 	    END { if (gua != "") print gua; else if (ll != "") print ll }'
 }
 
-# Actively resolve the host's stable GUA into the ND cache before we look it
-# up.  At a cold lease the router has only seen the host's link-local (from its
-# Router Solicitation); its GUA is never solicited, and an all-nodes probe
-# surfaces only link-locals.  We form the host's EUI-64 GUA (advertised /64 +
-# modified-EUI-64 of the DHCP MAC) and ping it -- that address is stable across
-# the host's EUI-64 -> RFC 7217 link-local churn.  A host that uses RFC 7217
-# for its GUA too has no such address, so this is a harmless miss and we fall
-# back to its (equally stable) link-local.  (Assumes a standard /64 prefix; at
-# scale the operator supplies the stable identity via PD / route distribution.)
-provoke_gua() {
+# Preferred return next-hop: the host's stable EUI-64 GUA.  We DERIVE it
+# (advertised /64 + modified-EUI-64 of the DHCP MAC), so the address is already
+# known; the only open question is whether the host actually formed it, which an
+# ndisc6 Neighbor Solicitation answers.  Nothing is written to the neighbour
+# cache -- the /32 route below carries this GUA as its next hop and the kernel
+# resolves it by ND on the first return packet, as for any route.  A GUA is
+# stable across the host's EUI-64 -> RFC 7217 link-local churn and, unlike a
+# link-local, survives a DHCP relay or a routed access layer.  A host using
+# RFC 7217 for its GUA has no EUI-64 address: the probe times out and we fall
+# back to find_nexthop's link-local.  ndisc6 is optional; without it we skip
+# straight to find_nexthop.  (Assumes a standard /64 prefix; at scale the
+# operator supplies the stable identity via PD / route distribution.)
+gua_nexthop() {
+	command -v ndisc6 >/dev/null 2>&1 || return 0
 	pfx=$(ip -6 route show dev "$IF" 2>/dev/null | \
 	    awk '$1 ~ /^([23]|f[cd]).*::\/64$/ { sub(/\/64$/,"",$1); print $1; exit }')
 	[ -n "$pfx" ] || return 0
@@ -56,21 +57,21 @@ provoke_gua() {
 	o5=${r%%:*}; o6=${r##*:}
 	b1=$(printf '%02x' "$(( 0x$o1 ^ 2 ))") || return 0
 	gua="${pfx}${b1}${o2}:${o3}ff:fe${o4}:${o5}${o6}"
-	ping -6 -c1 -W1 "$gua" >/dev/null 2>&1 || \
-	    ping6 -c1 -W1 "$gua" >/dev/null 2>&1 || true
+	ndisc6 -1 -q -w 1000 "$gua" "$IF" >/dev/null 2>&1 || return 0
+	printf '%s\n' "$gua"
 }
 
 case "$action" in
 add|old)
-	# A host that only speaks DHCPv4 may not have populated the router's
-	# ND cache yet.  Without the /32 route below, dnsmasq's reply to the
-	# client -- sent pinned to this interface -- has no via-inet6 next hop
-	# to follow, so the kernel falls back to resolving the host's IPv4
-	# on-link (ARP), leaving exactly the per-lease ARP entry we want to
-	# avoid.  So provoke the stable GUA into the cache, then look up; on a
-	# miss, fall back to an all-nodes probe (surfaces a link-local) and retry.
-	provoke_gua
-	nh=$(find_nexthop)
+	# The /32 must carry an IPv6 next hop: without it, dnsmasq's reply --
+	# pinned to this interface -- has no via-inet6 to follow and the kernel
+	# resolves the host's IPv4 on-link (ARP), leaving exactly the per-lease
+	# ARP entry we want to avoid.  Prefer the derived+verified EUI-64 GUA;
+	# fall back to a cached next hop, then to an all-nodes probe that surfaces
+	# a link-local.  The kernel resolves whichever we pick by ND when the
+	# first return packet needs it.
+	nh=$(gua_nexthop)
+	[ -n "$nh" ] || nh=$(find_nexthop)
 	if [ -z "$nh" ]; then
 		ping -6 -c1 -W1 "ff02::1%$IF" >/dev/null 2>&1 || \
 		    ping6 -c1 -W1 "ff02::1%$IF" >/dev/null 2>&1 || true

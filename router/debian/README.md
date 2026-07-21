@@ -41,8 +41,9 @@ The router state lives in native config, each in its canonical location (the
 - **`usr/local/sbin/v4gw-lease.sh`** (dnsmasq `dhcp-script`) — installs each
   host's RFC 5549 return route `198.51.100.x/32 via inet6 <host-IPv6>`, finding
   the next hop by the DHCP MAC in the router's ND cache. It prefers a stable
-  global address over the link-local (provoking the host's EUI-64 GUA into the
-  cache), so the route stays routable beyond the local link. A host using
+  global address over the link-local — deriving the host's EUI-64 GUA and
+  confirming it with a neighbor solicitation (`ndisc6`); the kernel resolves
+  that next hop lazily — so the route stays routable beyond the local link. A host using
   RFC 7217 for its GUA (the systemd/NetworkManager default) has no MAC-derived
   GUA to provoke and falls back to its stable link-local, routable only on the
   directly-attached segment. This hook stands in for route distribution
@@ -60,7 +61,7 @@ host-facing interface in `interfaces.d/v4gw`, `nftables.conf`, and
 `v4gw/dnsmasq.conf` (this testbed uses `enp0s1` uplink, `enp0s2` host segment).
 
 ```sh
-sudo apt install dnsmasq nftables
+sudo apt install dnsmasq nftables ndisc6
 sudo systemctl disable --now dnsmasq        # free the packaged instance
 
 # The tree mirrors its destinations:
