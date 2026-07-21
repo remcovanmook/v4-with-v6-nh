@@ -27,8 +27,9 @@ to the FIFO this daemon reads.  From there the daemon owns the return route:
 
 Nothing is pinned into the neighbour cache: an inet6 next hop is resolved by ND
 on demand.  The daemon solicits the derived GUA (a throwaway datagram, kernel-
-originated ND) only while it is not yet using it, so a host that never forms an
-EUI-64 GUA (RFC 7217 for its GUA too) simply stays on its link-local.
+originated ND) once per lease, after a settle delay, then relies on reactive
+adoption; a host that never forms an EUI-64 GUA (link-local only, or RFC 7217
+for its GUA too) simply stays on its link-local without further solicitation.
 
 Reconciliation is idempotent; a periodic sweep re-evaluates every host, so a
 monitor overrun or a missed event self-heals within RECONCILE_SEC.
@@ -44,6 +45,7 @@ import signal
 import socket
 import sys
 import syslog
+import time
 
 from pyroute2 import IPRoute
 from pyroute2.netlink import rtnl
@@ -55,6 +57,8 @@ FIFO = "/run/v4gwrd/events"
 STATE = "/var/lib/v4gwrd/leases"
 LEASES = "/var/lib/misc/dnsmasq.leases"
 RECONCILE_SEC = 15          # periodic self-heal sweep
+GUA_PROBE_DELAY = 15        # settle time before the single GUA solicitation,
+                            # ~one RA interval so the host has formed its GUA
 NUD_USABLE = {0x02, 0x04, 0x08, 0x10}   # REACHABLE, STALE, DELAY, PROBE
 
 running = True
@@ -190,8 +194,17 @@ class Manager:
         if idx is None:
             return                          # interface gone; sweep will retry
         nh, gua = self.best_nexthop(idx, mac)
-        if gua and nh != gua:
-            kick_nud(h["iface"], gua)        # solicit the stable GUA to adopt it
+        # Solicit the derived GUA at most once per lease, after a settle delay
+        # (one RA interval, so the host has had time to form its SLAAC GUA).
+        # A link-local-only or RFC 7217 host never answers; we then stay quiet
+        # and rely on reactive NEWNEIGH adoption, rather than re-soliciting a
+        # nonexistent address on every sweep.
+        if gua and nh == gua:
+            h["probe_at"] = None             # already on the GUA; nothing to do
+        elif (gua and h.get("probe_at") is not None
+                and time.monotonic() >= h["probe_at"]):
+            kick_nud(h["iface"], gua)
+            h["probe_at"] = None             # one solicitation per lease
         if nh is None or nh == h["nh"]:
             return
         self.install(h["iface"], idx, h["ip4"], nh)
@@ -209,7 +222,8 @@ class Manager:
             self.withdraw(h["ip4"], "lease changed")
             h = None
         if h is None:
-            self.hosts[mac] = {"iface": iface, "ip4": ip4, "nh": None}
+            h = self.hosts[mac] = {"iface": iface, "ip4": ip4, "nh": None}
+        h["probe_at"] = time.monotonic() + GUA_PROBE_DELAY   # one GUA check per lease
         self.persist()
         self.evaluate(mac)
 
@@ -258,7 +272,8 @@ class Manager:
             mac, iface, ip4 = p[0].lower(), p[1], p[2]
             if live is not None and (mac, ip4) not in live:
                 continue                    # expired while we were down
-            self.hosts[mac] = {"iface": iface, "ip4": ip4, "nh": None}
+            self.hosts[mac] = {"iface": iface, "ip4": ip4, "nh": None,
+                               "probe_at": time.monotonic() + GUA_PROBE_DELAY}
         if self.hosts:
             log(f"restored {len(self.hosts)} lease(s) from {STATE}")
 
