@@ -38,8 +38,8 @@ The router state lives in native config, each in its canonical location (the
 - **`etc/v4gw/dnsmasq.conf`** (run by **`etc/systemd/system/v4gw-dnsmasq.service`**)
   — RA (advertises this router as the IPv6 default router + SLAAC prefix, with
   RDNSS) and DHCPv4 (`/32` leases, `Router=192.0.0.11`, no option 6/121/249).
-- **`usr/local/sbin/v4gw-lease.sh`** (dnsmasq `dhcp-script`) — installs each
-  host's RFC 5549 return route `198.51.100.x/32 via inet6 <host-IPv6>`, finding
+- **`usr/local/sbin/v4gw-lease.sh`** (dnsmasq `dhcp-script`, one-shot) — installs
+  each host's RFC 5549 return route `198.51.100.x/32 via inet6 <host-IPv6>`, finding
   the next hop by the DHCP MAC in the router's ND cache. It prefers a stable
   global address over the link-local — deriving the host's EUI-64 GUA and
   confirming it with a neighbor solicitation (`ndisc6`); the kernel resolves
@@ -79,6 +79,33 @@ sudo ifup enp0s2                            # host segment (or just reboot)
 sudo systemctl enable --now v4gw-dnsmasq    # RA + DHCPv4
 # logs: journalctl -u v4gw-dnsmasq -f
 ```
+
+### Return route: one-shot hook or tracking daemon
+
+`v4gw-lease.sh` resolves the next hop once, when dnsmasq fires. Its parallel is
+**`usr/local/sbin/v4gwrd.py`** — a long-running daemon (the router mirror of
+`host/v4gwd.py`) that *follows* each host's live IPv6 next hop the way `v4gwd`
+follows the host's live gateway. dnsmasq then runs the thin
+**`usr/local/sbin/v4gw-lease-notify.sh`**, which only forwards
+`<action> <iface> <mac> <ip4>` to the daemon's FIFO; the daemon owns the route.
+It adopts the stable EUI-64 GUA as soon as it resolves (winning the cold-lease
+race), re-slaves across link-local churn or a neighbor failure, and rebuilds its
+routes from `/var/lib/v4gwrd/leases` on restart. Choose one as the `dhcp-script`:
+
+```sh
+sudo install -m 755 usr/local/sbin/v4gwrd.py            /usr/local/sbin/
+sudo install -m 755 usr/local/sbin/v4gw-lease-notify.sh /usr/local/sbin/
+sudo cp etc/systemd/system/v4gwrd.service               /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now v4gwrd
+# then point dhcp-script= at the notifier and restart dnsmasq:
+sudo sed -i 's#dhcp-script=.*#dhcp-script=/usr/local/sbin/v4gw-lease-notify.sh#' /etc/v4gw/dnsmasq.conf
+sudo systemctl restart v4gw-dnsmasq
+# logs: journalctl -u v4gwrd -f
+```
+
+The daemon needs only Python 3 + pyroute2, and solicits next hops through the
+kernel's own ND — so unlike the one-shot hook it needs no `ndisc6`.
 
 It is reboot-safe by construction: `systemd-sysctl`, `nftables.service`,
 `ifupdown`, and `v4gw-dnsmasq.service` each restore their own part. On the

@@ -1,0 +1,21 @@
+[Unit]
+Description=IPv6-Resolved IPv4 Gateway return-route daemon (router side)
+Documentation=https://datatracker.ietf.org/doc/draft-vanmook-intarea-ipv6-resolved-gateway/
+After=network.target
+
+[Service]
+Type=exec
+ExecStart=/usr/local/sbin/v4gwrd.py
+Restart=on-failure
+RestartSec=5
+RuntimeDirectory=v4gwrd
+StateDirectory=v4gwrd
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
