@@ -1,0 +1,16 @@
+# debian-ha: host-facing IPv6-only segments -- the router's per-segment IPv6
+# GUA.  keepalived (VRRP) owns the 192.0.0.11 gateway VIP, placing it on the
+# segment this node masters.
+# The per-router link-local IPv4 /32 is the source address keepalived uses to
+# send IPv4 VRRP adverts on an IPv6-only segment; hosts never use it.
+auto enp0s2
+iface enp0s2 inet6 static
+    address 2001:db8:1::b        # PER-NODE: gw3 uses 2001:db8:1::c
+    netmask 64
+    up ip addr replace 169.254.21.2/32 dev enp0s2    # PER-NODE: gw3 uses .3
+
+auto enp0s3
+iface enp0s3 inet6 static
+    address 2001:db8:2::b        # PER-NODE: gw3 uses 2001:db8:2::c
+    netmask 64
+    up ip addr replace 169.254.22.2/32 dev enp0s3    # PER-NODE: gw3 uses .3
