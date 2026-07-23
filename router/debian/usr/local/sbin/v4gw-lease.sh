@@ -13,6 +13,9 @@ action=${1:-}
 mac=${2:-}
 ip4=${3:-}
 IF=${DNSMASQ_INTERFACE:-}
+# Special-purpose gateway (return-route source): draft-provisional 192.0.0.11,
+# overridable pending its IANA assignment.  Default unchanged.
+GW=${V4GW_GATEWAY:-192.0.0.11}
 
 [ -n "$IF" ] || exit 0
 [ -n "$ip4" ] || exit 0
@@ -83,7 +86,7 @@ add|old)
 		# target 203.0.113.1 as the source for replies and return
 		# traffic, so clients would see answers from the wrong address.
 		ip route replace "$ip4/32" via inet6 "$nh" dev "$IF" \
-		    src 192.0.0.11
+		    src "$GW"
 	fi
 	# Drop any IPv4 neighbour entry the kernel formed for this host.  With
 	# the /32 routed via inet6 it is never consulted for forwarding, and

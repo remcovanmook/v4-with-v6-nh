@@ -51,7 +51,10 @@ from pyroute2 import IPRoute
 from pyroute2.netlink import rtnl
 from pyroute2.netlink.exceptions import NetlinkError
 
-SENTINEL = "192.0.0.11"     # return-route source (also the DHCP server-id)
+# The special-purpose IPv4 gateway (return-route source; also the DHCP
+# server-id).  Draft-provisional 192.0.0.11, overridable via V4GW_GATEWAY so the
+# address is not baked in ahead of its IANA assignment; default unchanged.
+SENTINEL = os.environ.get("V4GW_GATEWAY", "192.0.0.11")
 RT_PROTO = 195              # marks return routes owned by this daemon
 FIFO = "/run/v4gwrd/events"
 STATE = "/var/lib/v4gwrd/leases"
@@ -356,7 +359,8 @@ def main():
     mgr = Manager(ipr)
     fifo_fd = open_fifo()
     mgr.restore()
-    log("starting: tracking return routes; following each host's IPv6 next hop")
+    log(f"starting: gateway {SENTINEL}; tracking return routes, "
+        f"following each host's IPv6 next hop")
     mgr.reconcile_all()
 
     serve(mgr, fifo_fd, mon, rpipe)

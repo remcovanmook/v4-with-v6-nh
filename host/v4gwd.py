@@ -71,7 +71,10 @@ from pyroute2 import IPRoute
 from pyroute2.netlink import rtnl
 from pyroute2.netlink.exceptions import NetlinkError
 
-SENTINEL = "192.0.0.11"
+# The special-purpose IPv4 gateway.  Draft-provisional 192.0.0.11; kept
+# overridable via V4GW_GATEWAY so the address is not baked in ahead of its
+# IANA assignment.  The default is unchanged.
+SENTINEL = os.environ.get("V4GW_GATEWAY", "192.0.0.11")
 RT_PROTO = 199          # marks routes owned by this daemon
 DEFAULT_METRIC = 50     # must be lower than the sentinel route's metric
 NUD_PERMANENT = 0x80    # linux/neighbour.h: a static, non-expiring entry
@@ -294,7 +297,7 @@ class Interface:
 
         if self.require_sentinel and not self.sentinel_present():
             if self.active():
-                self.withdraw("sentinel 192.0.0.11 removed; ceasing per s4")
+                self.withdraw(f"sentinel {SENTINEL} removed; ceasing per s4")
             return
 
         gw = self.select_router()
@@ -337,7 +340,7 @@ def main():
     ap.add_argument("interfaces", nargs="*", metavar="IFACE",
                     help="interfaces to manage (default: all ethernet)")
     ap.add_argument("--unconditional", action="store_true",
-                    help="manage without requiring a 192.0.0.11 default route "
+                    help="manage without requiring the sentinel default route "
                          "(static/lab mode); the sentinel route is required "
                          "by default")
     ap.add_argument("--metric", type=int, default=DEFAULT_METRIC)
@@ -352,7 +355,7 @@ def main():
     auto = not args.interfaces
     dp = "static neighbor (no RTA_VIA)" if static_arp else "native RTA_VIA"
     scope = "all ethernet interfaces" if auto else " ".join(args.interfaces)
-    log(f"starting: {dp}; managing {scope}; "
+    log(f"starting: {dp}; gateway {SENTINEL}; managing {scope}; "
         f"{'sentinel required' if require_sentinel else 'unconditional'}")
 
     # Wakeup pipe so signals interrupt poll() (PEP 475 retries EINTR)
