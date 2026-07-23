@@ -15,8 +15,8 @@ It is the tracking alternative to the one-shot dnsmasq dhcp-script
 as a thin notifier: v4gw-lease-notify.sh writes "<action> <iface> <mac> <ip4>"
 to the FIFO this daemon reads.  From there the daemon owns the return route:
 
-  1. on a lease it records the host and installs "<ip4>/32 via inet6 <next-hop>
-     src 192.0.0.11", tagged rt proto 195 so its routes are identifiable;
+  1. on a lease it records the host and installs "<ip4>/32 via inet6 <next-hop>",
+     tagged rt proto 195 so its routes are identifiable;
   2. it prefers the host's stable EUI-64 GUA (advertised /64 + modified-EUI-64
      of the DHCP MAC) over any other GUA, and a link-local last; the next hop is
      resolved by the kernel's own Neighbor Discovery, never ARP;
@@ -51,10 +51,6 @@ from pyroute2 import IPRoute
 from pyroute2.netlink import rtnl
 from pyroute2.netlink.exceptions import NetlinkError
 
-# The special-purpose IPv4 gateway (return-route source; also the DHCP
-# server-id).  Draft-provisional 192.0.0.11, overridable via V4GW_GATEWAY so the
-# address is not baked in ahead of its IANA assignment; default unchanged.
-SENTINEL = os.environ.get("V4GW_GATEWAY", "192.0.0.11")
 RT_PROTO = 195              # marks return routes owned by this daemon
 FIFO = "/run/v4gwrd/events"
 STATE = "/var/lib/v4gwrd/leases"
@@ -164,7 +160,7 @@ class Manager:
     def install(self, ifname, idx, ip4, nh):
         try:
             self.ipr.route("replace", family=socket.AF_INET, dst=f"{ip4}/32",
-                           oif=idx, proto=RT_PROTO, prefsrc=SENTINEL,
+                           oif=idx, proto=RT_PROTO,
                            via={"family": socket.AF_INET6, "addr": nh})
             log(f"{ifname}: return route {ip4}/32 -> via inet6 {nh}")
         except NetlinkError as e:
@@ -359,8 +355,7 @@ def main():
     mgr = Manager(ipr)
     fifo_fd = open_fifo()
     mgr.restore()
-    log(f"starting: gateway {SENTINEL}; tracking return routes, "
-        f"following each host's IPv6 next hop")
+    log("starting: tracking return routes, following each host's IPv6 next hop")
     mgr.reconcile_all()
 
     serve(mgr, fifo_fd, mon, rpipe)
