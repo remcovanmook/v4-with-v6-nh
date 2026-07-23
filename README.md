@@ -7,6 +7,11 @@ gateway address **192.0.0.11**, resolved from the IPv6 neighbor cache
 instead of ARP. No IPv4 subnets, no tunnelling, no translation — IPv4
 packets are carried natively, end to end.
 
+> **192.0.0.11 is provisional.** The draft requests this special-purpose
+> address from IANA; it is not yet assigned. The implementations here carry it
+> as a default that the `V4GW_GATEWAY` environment variable overrides, so a
+> different allocation is a configuration change, not a code change.
+
 ## Layout
 
 ```text

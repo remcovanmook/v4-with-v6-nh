@@ -67,8 +67,11 @@
 #include <syslog.h>
 #include <unistd.h>
 
-#define SENTINEL_STR    "192.0.0.11"
-#define SENTINEL_ADDR   htonl(0xc000000bU)      /* 192.0.0.11 */
+/* The special-purpose IPv4 gateway.  Draft-provisional 192.0.0.11, overridable
+ * via V4GW_GATEWAY (parsed in main) so the address is not baked in ahead of its
+ * IANA assignment.  The default is unchanged. */
+static char      sentinel_str[16] = "192.0.0.11";
+static in_addr_t sentinel_addr;         /* network order; set from sentinel_str */
 #define DEFAULT_INTERVAL 15
 
 /* Darwin pads routing-socket sockaddrs to 4-byte (uint32_t) boundaries. */
@@ -315,7 +318,7 @@ arp_entry_present(const uint8_t mac[6])
                         continue;
 
                 dst = (struct sockaddr_in *)(void *)rti[RTAX_DST];
-                if (dst->sin_addr.s_addr != (in_addr_t)SENTINEL_ADDR)
+                if (dst->sin_addr.s_addr != (in_addr_t)sentinel_addr)
                         continue;
 
                 sdl = (struct sockaddr_dl *)(void *)rti[RTAX_GATEWAY];
@@ -367,7 +370,7 @@ install(const uint8_t mac[6])
 {
         char macstr[18];
         char ifbuf[IF_NAMESIZE];
-        char *sv[] = { "/usr/sbin/arp", "-s", SENTINEL_STR, NULL,
+        char *sv[] = { "/usr/sbin/arp", "-s", sentinel_str, NULL,
             "ifscope", NULL, NULL };
 
         /*
@@ -386,11 +389,11 @@ install(const uint8_t mac[6])
 
         if (run(sv) != 0) {
                 syslog(LOG_ERR, "%s: arp -s %s %s failed",
-                    ifname, SENTINEL_STR, macstr);
+                    ifname, sentinel_str, macstr);
                 return;
         }
         syslog(LOG_NOTICE, "%s: IPv4 gateway %s -> %s "
-            "(ND-resolved IPv6 default router)", ifname, SENTINEL_STR, macstr);
+            "(ND-resolved IPv6 default router)", ifname, sentinel_str, macstr);
         arp_installed = true;
         memcpy(installed_mac, mac, 6);
 }
@@ -399,7 +402,7 @@ static void
 withdraw(const char *reason)
 {
         char ifbuf[IF_NAMESIZE];
-        char *dv[] = { "/usr/sbin/arp", "-d", SENTINEL_STR,
+        char *dv[] = { "/usr/sbin/arp", "-d", sentinel_str,
             "ifscope", NULL, NULL };
 
         if (!arp_installed)
@@ -409,7 +412,7 @@ withdraw(const char *reason)
         dv[4] = ifbuf;
         (void)run(dv);
         syslog(LOG_NOTICE, "%s: withdrew static ARP for %s (%s)",
-            ifname, SENTINEL_STR, reason);
+            ifname, sentinel_str, reason);
         arp_installed = false;
 }
 
@@ -428,7 +431,7 @@ sentinel_in_file(void)
         if ((fp = fopen(sentinel_file, "r")) == NULL)
                 return false;
         if (fgets(buf, sizeof(buf), fp) != NULL)
-                ok = strncmp(buf, SENTINEL_STR, strlen(SENTINEL_STR)) == 0;
+                ok = strncmp(buf, sentinel_str, strlen(sentinel_str)) == 0;
         fclose(fp);
         return ok;
 }
@@ -473,7 +476,7 @@ sentinel_in_fib(void)
                 gw = (struct sockaddr_in *)(void *)rti[RTAX_GATEWAY];
                 if (dst->sin_addr.s_addr != 0)
                         continue;       /* not the default route */
-                if (gw->sin_addr.s_addr == SENTINEL_ADDR) {
+                if (gw->sin_addr.s_addr == sentinel_addr) {
                         found = true;
                         break;
                 }
@@ -632,7 +635,7 @@ dry_run_report(void)
         printf("v4gwd-arp dry run on %s (ifindex %u)\n", ifname, ifindex);
 
         if (require_sentinel_route)
-                printf("  sentinel %s in IPv4 FIB : %s\n", SENTINEL_STR,
+                printf("  sentinel %s in IPv4 FIB : %s\n", sentinel_str,
                     sentinel_in_fib() ? "yes" : "no (would not manage)");
         if (sentinel_file != NULL)
                 printf("  sentinel state file      : %s\n",
@@ -654,7 +657,7 @@ dry_run_report(void)
         mac_str(mac, macstr);
         printf("  router link-layer        : %s (from ND cache)\n", macstr);
         printf("  would install            : arp -s %s %s ifscope %s\n",
-            SENTINEL_STR, macstr, ifname);
+            sentinel_str, macstr, ifname);
         return 0;
 }
 
@@ -672,6 +675,14 @@ main(int argc, char **argv)
         struct pollfd pfd;
         char msgbuf[2048];
         int ch;
+
+        const char *envgw = getenv("V4GW_GATEWAY");
+        struct in_addr sa;
+        if (envgw && *envgw)
+                snprintf(sentinel_str, sizeof sentinel_str, "%s", envgw);
+        if (inet_aton(sentinel_str, &sa) == 0)
+                errx(2, "invalid V4GW_GATEWAY '%s'", sentinel_str);
+        sentinel_addr = sa.s_addr;
 
         while ((ch = getopt(argc, argv, "nrf:i:")) != -1) {
                 switch (ch) {
