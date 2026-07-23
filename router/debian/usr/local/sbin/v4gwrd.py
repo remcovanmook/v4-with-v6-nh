@@ -16,7 +16,7 @@ as a thin notifier: v4gw-lease-notify.sh writes "<action> <iface> <mac> <ip4>"
 to the FIFO this daemon reads.  From there the daemon owns the return route:
 
   1. on a lease it records the host and installs "<ip4>/32 via inet6 <next-hop>",
-     tagged rt proto 195 so its routes are identifiable;
+     tagged rt proto 149 ("v4gw") so its routes are identifiable;
   2. it prefers the host's stable EUI-64 GUA (advertised /64 + modified-EUI-64
      of the DHCP MAC) over any other GUA, and a link-local last; the next hop is
      resolved by the kernel's own Neighbor Discovery, never ARP;
@@ -51,7 +51,9 @@ from pyroute2 import IPRoute
 from pyroute2.netlink import rtnl
 from pyroute2.netlink.exceptions import NetlinkError
 
-RT_PROTO = 195              # marks return routes owned by this daemon
+RT_PROTO = 149              # marks return routes owned by this daemon.  Not in
+                            # FRR's 186-198 range (195 == FRR "pbr"); named
+                            # "v4gw" via /etc/iproute2/rt_protos.d/v4gw.conf.
 FIFO = "/run/v4gwrd/events"
 STATE = "/var/lib/v4gwrd/leases"
 LEASES = "/var/lib/misc/dnsmasq.leases"
